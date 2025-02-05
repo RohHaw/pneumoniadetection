@@ -1,18 +1,23 @@
+# app.py
 import streamlit as st
 import plotly.graph_objects as go
 from PIL import Image
 from classifier import PneumoniaClassifier
 from clinical_qa import ClinicalQA
+import os
 
 def main():
     st.set_page_config(page_title="Pneumonia X-Ray Classifier", layout="wide")
     
     st.title("Pneumonia X-Ray Classification with Clinical Q&A")
     
+    # Get Gemini API key from environment or Streamlit secrets
+    api_key = os.getenv('GEMINI_API_KEY') or st.secrets['GEMINI_API_KEY']
+    
     # Initialize classifier and QA system
     try:
         classifier = PneumoniaClassifier()
-        qa_system = ClinicalQA()
+        qa_system = ClinicalQA(api_key=api_key)
         model_load_success = True
     except Exception as e:
         st.error(f"Error loading model: {str(e)}")
@@ -31,7 +36,7 @@ def main():
                 # Display uploaded image and get predictions
                 image = Image.open(uploaded_file).convert('RGB')
                 col1.subheader("Original Image")
-                col1.image(image, use_column_width=True)
+                col1.image(image, True)
                 
                 with st.spinner('Analyzing image...'):
                     try:
@@ -42,7 +47,7 @@ def main():
                         
                         # Display GradCAM
                         col2.subheader("GradCAM Visualization")
-                        col2.image(results['gradcam'], use_column_width=True)
+                        col2.image(results['gradcam'], use_container_width=True)
                         col2.info("Areas highlighted in red show regions the model focused on for its prediction")
                         
                         # Display results in col3
@@ -84,32 +89,37 @@ def main():
             with tab2:
                 st.subheader("Clinical Q&A Interface")
                 st.write("""
-                Ask questions about the analysis results. For example:
-                - How confident is the model in its diagnosis?
-                - Which regions of the image influenced the decision?
-                - How does the GradCAM visualization compare to the original image?
+                Ask questions about the analysis results. The AI assistant will help interpret the results 
+                and provide medical context. Remember that this is for educational purposes only.
                 """)
                 
-                # Question input
-                question = st.text_input("Enter your question:")
-                if question:
-                    response = qa_system.answer_question(question)
-                    st.write("Response:", response)
-                
-                # Chat history
-                if 'chat_history' not in st.session_state:
-                    st.session_state.chat_history = []
-                
-                if question:
-                    st.session_state.chat_history.append(("Q: " + question, "A: " + response))
+                # Initialize chat history in session state
+                if 'messages' not in st.session_state:
+                    st.session_state.messages = []
                 
                 # Display chat history
-                if st.session_state.chat_history:
-                    st.subheader("Previous Questions & Answers")
-                    for q, a in reversed(st.session_state.chat_history):
-                        st.text(q)
-                        st.text(a)
-                        st.markdown("---")
+                for message in st.session_state.messages:
+                    with st.chat_message(message["role"]):
+                        st.markdown(message["content"])
+                
+                # Chat input
+                if prompt := st.chat_input("Ask a question about the analysis:"):
+                    # Add user message to chat history
+                    st.session_state.messages.append({"role": "user", "content": prompt})
+                    with st.chat_message("user"):
+                        st.markdown(prompt)
+                    
+                    # Get AI response
+                    with st.chat_message("assistant"):
+                        with st.spinner("Thinking..."):
+                            if any(word in prompt.lower() for word in ['show', 'look', 'image', 'visual']):
+                                response = qa_system.answer_question_with_image(prompt)
+                            else:
+                                response = qa_system.answer_question(prompt)
+                            st.markdown(response)
+                    
+                    # Add assistant response to chat history
+                    st.session_state.messages.append({"role": "assistant", "content": response})
         
         else:
             st.info("Upload an X-ray image to begin analysis and ask questions.")

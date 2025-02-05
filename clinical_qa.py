@@ -1,27 +1,28 @@
+# clinical_qa.py
+import google.generativeai as genai
 from typing import Dict, Any
 from PIL import Image
 
 class ClinicalQA:
-    def __init__(self):
+    def __init__(self, api_key: str):
+        # Initialize Gemini
+        genai.configure(api_key=api_key)
+        self.model = genai.GenerativeModel('gemini-pro')
+        self.vision_model = genai.GenerativeModel('gemini-pro-vision')
         self.analysis_context = None
+        self.chat = None
         
-        # Template responses for different types of questions
-        self.response_templates = {
-            'confidence': [
-                "Based on the analysis, the model's confidence in its {prediction} diagnosis is {confidence:.1f}%.",
-                "The differential probabilities show {normal_prob:.1f}% for normal and {pneumonia_prob:.1f}% for pneumonia.",
-                "This {confidence_level} confidence level suggests {confidence_interpretation}."
-            ],
-            'regions': [
-                "The GradCAM analysis highlights {region_description}.",
-                "These highlighted areas are typically associated with {clinical_relevance}.",
-                "The intensity of the highlighting suggests {intensity_interpretation}."
-            ],
-            'comparison': [
-                "Comparing the original image with the GradCAM visualization, {comparison_observation}.",
-                "This pattern is {pattern_typicality} for this type of diagnosis."
-            ]
-        }
+        # System prompt to set context
+        self.system_prompt = """You are a medical AI assistant helping to interpret chest X-ray analysis results. 
+        You should:
+        - Provide clear, professional medical interpretations
+        - Reference specific areas of the image and model predictions when relevant
+        - Maintain appropriate medical terminology while being understandable
+        - Always include appropriate medical disclaimers
+        - Never make definitive diagnoses, instead describe observations and possibilities
+        
+        Current analysis context: {context}
+        """
 
     def set_context(self, analysis_results: Dict[str, Any], original_image: Image.Image):
         """Store analysis results and image for context in answering questions"""
@@ -30,89 +31,51 @@ class ClinicalQA:
             'original_image': original_image,
         }
         
-    def _get_confidence_level(self, confidence: float) -> str:
-        if confidence >= 90:
-            return "very high"
-        elif confidence >= 75:
-            return "high"
-        elif confidence >= 60:
-            return "moderate"
-        else:
-            return "low"
-
-    def _get_confidence_interpretation(self, confidence: float, prediction: str) -> str:
-        level = self._get_confidence_level(confidence)
-        if level in ["very high", "high"]:
-            return "a strong basis for the diagnosis"
-        elif level == "moderate":
-            return "that additional clinical correlation may be beneficial"
-        else:
-            return "that additional imaging or clinical tests may be warranted"
-
-    def _analyze_gradcam_regions(self) -> Dict[str, str]:
-        """Analyze the GradCAM heatmap to describe regions of interest"""
-        prediction = self.analysis_context['results']['class']
-        if prediction == 'Pneumonia':
-            return {
-                'region_description': "significant activation in the lung fields",
-                'clinical_relevance': "potential areas of consolidation or infiltrates",
-                'intensity_interpretation': "varying degrees of involvement across the lung fields"
-            }
-        else:
-            return {
-                'region_description': "relatively uniform activation across the lung fields",
-                'clinical_relevance': "normal lung appearance",
-                'intensity_interpretation': "no significant areas of concern"
-            }
-
-    def _process_comparison_question(self) -> Dict[str, str]:
-        """Generate comparative analysis between original and GradCAM"""
-        prediction = self.analysis_context['results']['class']
-        confidence = self.analysis_context['results']['confidence']
+        # Format context for the system prompt
+        context_str = f"""
+        - Prediction: {analysis_results['class']}
+        - Confidence: {analysis_results['confidence']:.1f}%
+        - Probability Distribution: Normal ({analysis_results['probabilities']['Normal']:.1f}%), 
+          Pneumonia ({analysis_results['probabilities']['Pneumonia']:.1f}%)
+        """
         
-        if prediction == 'Pneumonia':
-            return {
-                'comparison_observation': "the areas of high activation correspond to regions of potential infiltrate or consolidation",
-                'pattern_typicality': "consistent with commonly observed patterns" if confidence > 75 else "somewhat atypical"
-            }
-        else:
-            return {
-                'comparison_observation': "the activation pattern shows relatively uniform distribution without concerning focal areas",
-                'pattern_typicality': "typical of normal chest radiographs"
-            }
+        # Initialize new chat with context
+        self.chat = self.model.start_chat(history=[])
+        self.chat.send_message(self.system_prompt.format(context=context_str))
 
     def answer_question(self, question: str) -> str:
-        """Generate a context-aware response to a clinical question"""
+        """Generate a response using Gemini API"""
         if self.analysis_context is None:
             return "Please upload and analyze an image first before asking questions."
         
-        # Convert question to lowercase for easier matching
-        question = question.lower()
-        
-        # Extract relevant context
-        results = self.analysis_context['results']
-        confidence = results['confidence']
-        prediction = results['class']
-        probabilities = results['probabilities']
-        
-        # Prepare response based on question type
-        if any(word in question for word in ['confidence', 'sure', 'certain', 'probability']):
-            return " ".join(self.response_templates['confidence']).format(
-                prediction=prediction,
-                confidence=confidence,
-                normal_prob=probabilities['Normal'],
-                pneumonia_prob=probabilities['Pneumonia'],
-                confidence_level=self._get_confidence_level(confidence),
-                confidence_interpretation=self._get_confidence_interpretation(confidence, prediction)
-            )
-        elif any(word in question for word in ['region', 'area', 'where', 'location']):
-            regions = self._analyze_gradcam_regions()
-            return " ".join(self.response_templates['regions']).format(**regions)
-        elif any(word in question for word in ['compare', 'difference', 'original', 'visualization']):
-            comparison = self._process_comparison_question()
-            return " ".join(self.response_templates['comparison']).format(**comparison)
-        else:
-            return ("I'm not sure about that specific question. You can ask about:\n"
-                   "- Confidence levels and probabilities\n"
-                   "- Regions of interest in the image\n"
-                   "- Comparison between original and GradCAM visualization")
+        try:
+            # Send question to Gemini
+            response = self.chat.send_message(question)
+            return response.text
+            
+        except Exception as e:
+            return f"Error generating response: {str(e)}"
+            
+    async def answer_question_with_image(self, question: str) -> str:
+        """Generate a response using Gemini Vision API when image context is needed"""
+        if self.analysis_context is None:
+            return "Please upload and analyze an image first before asking questions."
+            
+        try:
+            # Prepare the image and results for Gemini
+            image = self.analysis_context['original_image']
+            results = self.analysis_context['results']
+            
+            # Create prompt with image context
+            prompt = f"""Analyzing chest X-ray image with model results:
+            Prediction: {results['class']}
+            Confidence: {results['confidence']:.1f}%
+            
+            Question: {question}"""
+            
+            # Send to Gemini Vision API
+            response = await self.vision_model.generate_content([prompt, image])
+            return response.text
+            
+        except Exception as e:
+            return f"Error generating response: {str(e)}"
