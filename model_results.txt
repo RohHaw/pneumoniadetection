@@ -1,0 +1,10 @@
+Final Model Results
+==================
+
+Best Validation Accuracy: 1.0000 (Epoch 12)
+
+Test Set Metrics:
+Accuracy: 0.8910
+Precision: 0.9059
+Recall: 0.8910
+F1 Score: 0.8863
