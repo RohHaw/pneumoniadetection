@@ -7,20 +7,20 @@ import numpy as np
 from gradcam import GradCAM
 
 class PneumoniaClassifier:
-    def __init__(self, model_path="best_model.pth"):
+    def __init__(self, model_path="best_model.pth", mc_dropout_iterations=20):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         
-        # Initialize model
+        # Initialize model with dropout
         self.model = models.resnet50(pretrained=False)
         self.model.fc = nn.Sequential(
-            nn.Dropout(p=0.3),
+            nn.Dropout(p=0.3),  # Increased dropout for uncertainty estimation
             nn.Linear(self.model.fc.in_features, 2)
         )
         
         # Load trained weights
         self.model.load_state_dict(torch.load(model_path, map_location=self.device))
         self.model = self.model.to(self.device)
-        self.model.eval()
+        self.mc_dropout_iterations = mc_dropout_iterations
         
         # Initialize GradCAM
         self.grad_cam = GradCAM(self.model, self.model.layer4[-1])
@@ -39,13 +39,26 @@ class PneumoniaClassifier:
         # Transform image
         image_tensor = self.transform(image).unsqueeze(0).to(self.device)
         
-        # Get prediction
+        # Monte Carlo Dropout for uncertainty estimation
+        self.model.train()  # Enable dropout
+        predictions = []
         with torch.no_grad():
-            outputs = self.model(image_tensor)
-            probabilities = torch.nn.functional.softmax(outputs, dim=1)
-            confidence, prediction = torch.max(probabilities, 1)
+            for _ in range(self.mc_dropout_iterations):
+                outputs = self.model(image_tensor)
+                predictions.append(torch.nn.functional.softmax(outputs, dim=1))
+        
+        # Convert to numpy for calculations
+        predictions = torch.stack(predictions).cpu().numpy()
+        
+        # Compute mean and standard deviation
+        mean_pred = predictions.mean(axis=0)
+        std_pred = predictions.std(axis=0)
+        
+        # Get prediction
+        confidence, prediction = torch.max(torch.from_numpy(mean_pred), 1)
         
         # Generate GradCAM
+        self.model.eval()  # Return to eval mode
         heatmap = self.grad_cam.generate(image_tensor)
         
         # Convert heatmap to RGB
@@ -63,9 +76,16 @@ class PneumoniaClassifier:
         return {
             'class': self.classes[prediction.item()],
             'confidence': confidence.item() * 100,
+            'uncertainty': std_pred[0].max() * 100,  # Uncertainty metric
             'probabilities': {
-                'Normal': probabilities[0][0].item() * 100,
-                'Pneumonia': probabilities[0][1].item() * 100
+                'Normal': mean_pred[0][0].item() * 100,
+                'Pneumonia': mean_pred[0][1].item() * 100
+            },
+            'confidence_interval': {
+                'Normal': (mean_pred[0][0].item() * 100 - 1.96 * std_pred[0][0].item() * 100, 
+                           mean_pred[0][0].item() * 100 + 1.96 * std_pred[0][0].item() * 100),
+                'Pneumonia': (mean_pred[0][1].item() * 100 - 1.96 * std_pred[0][1].item() * 100, 
+                               mean_pred[0][1].item() * 100 + 1.96 * std_pred[0][1].item() * 100)
             },
             'gradcam': Image.fromarray(superimposed)
         }

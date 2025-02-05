@@ -1,17 +1,58 @@
-# app.py
 import streamlit as st
-import plotly.graph_objects as go
+import numpy as np
 from PIL import Image
 from classifier import PneumoniaClassifier
 from clinical_qa import ClinicalQA
 import os
 
+def modern_result_display(results, original_image, gradcam_image):
+    """Create a modern, card-based result display"""
+    col1, col2 = st.columns([1, 1])
+    
+    with col1:
+        st.markdown(f"""
+        <div style='background-color: #f0f2f6; border-radius: 10px; padding: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);'>
+            <h3 style='color: #333; margin-bottom: 15px;'>🩺 Diagnosis</h3>
+            <div style='text-align: center;'>
+                <h2 style='color: {"red" if results["class"] == "Pneumonia" else "green"}; margin: 10px 0;'>
+                    {"Potential Pneumonia Detected" if results["class"] == "Pneumonia" else "No Pneumonia Indication"}
+                </h2>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col2:
+        st.markdown(f"""
+        <div style='background-color: #f0f2f6; border-radius: 10px; padding: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);'>
+            <h3 style='color: #333; margin-bottom: 15px;'>📊 Pneumonia Probability</h3>
+            <div style='text-align: center;'>
+                <span style='color: red; font-weight: bold; font-size: 1.2em;'>Pneumonia Probability</span>
+                <p style='margin: 10px 0; font-size: 1.5em; color: red;'>{results["probabilities"]["Pneumonia"]:.1f}%</p>
+                <small style='color: #666;'>95% Confidence Interval:</small>
+                <small style='color: #888;'>{results["confidence_interval"]["Pneumonia"][0]:.1f}% - {results["confidence_interval"]["Pneumonia"][1]:.1f}%</small>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    # X-Ray Visualization
+    st.markdown("---")
+    st.subheader("🔬 X-Ray Analysis")
+    
+    # Side-by-side image display
+    col_orig, col_grad = st.columns(2)
+    
+    with col_orig:
+        st.image(original_image, caption="Original X-Ray", use_container_width=True)
+    
+    with col_grad:
+        st.image(gradcam_image, caption="Model Focus Areas", use_container_width=True)
+
 def main():
-    st.set_page_config(page_title="Pneumonia X-Ray Classifier", layout="wide")
+    st.set_page_config(page_title="Pneumonia X-Ray Classifier", layout="wide", page_icon="🩺")
     
-    st.title("Pneumonia X-Ray Classification with Clinical Q&A")
+    st.title("🩺 Pneumonia X-Ray Classification")
     
-    # Get Gemini API key from environment or Streamlit secrets
+    # Get Gemini API key
     api_key = os.getenv('GEMINI_API_KEY') or st.secrets['GEMINI_API_KEY']
     
     # Initialize classifier and QA system
@@ -24,105 +65,60 @@ def main():
         model_load_success = False
     
     if model_load_success:
-        uploaded_file = st.file_uploader("Choose an X-ray image...", type=["jpg", "jpeg", "png"])
+        uploaded_file = st.file_uploader("Upload Chest X-Ray", type=["jpg", "jpeg", "png"], key="xray_uploader")
         
         if uploaded_file is not None:
-            # Create tabs for different views
-            tab1, tab2 = st.tabs(["Analysis", "Clinical Q&A"])
+            # Create columns for image and analysis
+            col1, col2 = st.columns([2, 3])
             
-            with tab1:
-                col1, col2, col3 = st.columns(3)
-                
-                # Display uploaded image and get predictions
+            with col1:
                 image = Image.open(uploaded_file).convert('RGB')
-                col1.subheader("Original Image")
-                col1.image(image, True)
-                
+                st.image(image, caption="Uploaded X-Ray Image", use_container_width=True)
+            
+            with col2:
                 with st.spinner('Analyzing image...'):
                     try:
                         results = classifier.predict(image)
-                        
-                        # Update QA system context
                         qa_system.set_context(results, image)
                         
-                        # Display GradCAM
-                        col2.subheader("GradCAM Visualization")
-                        col2.image(results['gradcam'], use_container_width=True)
-                        col2.info("Areas highlighted in red show regions the model focused on for its prediction")
-                        
-                        # Display results in col3
-                        col3.subheader("Classification Results")
-                        result_color = "green" if results['class'] == 'Normal' else "red"
-                        col3.markdown(f"""
-                        ### Diagnosis
-                        <div style='padding: 20px; border-radius: 5px; background-color: rgba({result_color=="red" and "255,0,0,0.1" or "0,255,0,0.1"})'>
-                            <h2 style='color: {result_color}; margin: 0;'>{results['class']}</h2>
-                            <p style='font-size: 1.2em; margin: 10px 0;'>Confidence: {results['confidence']:.1f}%</p>
-                        </div>
-                        """, unsafe_allow_html=True)
-                        
-                        # Show probability distribution
-                        col3.subheader("Probability Distribution")
-                        fig = go.Figure(data=[
-                            go.Bar(
-                                x=list(results['probabilities'].keys()),
-                                y=list(results['probabilities'].values()),
-                                marker_color=['green', 'red']
-                            )
-                        ])
-                        fig.update_layout(
-                            title="Classification Probabilities",
-                            yaxis_title="Probability (%)",
-                            yaxis_range=[0, 100]
-                        )
-                        col3.plotly_chart(fig, use_container_width=True)
-                        
-                        # Add disclaimer
-                        st.warning("""
-                        **Disclaimer**: This tool is for educational purposes only. 
-                        Medical diagnoses should always be made by qualified healthcare professionals.
-                        """)
+                        # Modern result display with original and gradcam images
+                        modern_result_display(results, image, results['gradcam'])
                         
                     except Exception as e:
                         st.error(f"Error during prediction: {str(e)}")
             
-            with tab2:
-                st.subheader("Clinical Q&A Interface")
-                st.write("""
-                Ask questions about the analysis results. The AI assistant will help interpret the results 
-                and provide medical context. Remember that this is for educational purposes only.
-                """)
+            # Chat Interface
+            st.markdown("---")
+            st.subheader("🤖 Clinical Assistant")
+            
+            # Initialize chat history
+            if 'messages' not in st.session_state:
+                st.session_state.messages = []
+            
+            # Display chat messages
+            for message in st.session_state.messages:
+                with st.chat_message(message["role"]):
+                    st.markdown(message["content"])
+            
+            # Chat input
+            if prompt := st.chat_input("Ask a question about the X-ray analysis"):
+                st.session_state.messages.append({"role": "user", "content": prompt})
                 
-                # Initialize chat history in session state
-                if 'messages' not in st.session_state:
-                    st.session_state.messages = []
+                with st.chat_message("user"):
+                    st.markdown(prompt)
                 
-                # Display chat history
-                for message in st.session_state.messages:
-                    with st.chat_message(message["role"]):
-                        st.markdown(message["content"])
+                with st.chat_message("assistant"):
+                    with st.spinner("Generating response..."):
+                        if any(word in prompt.lower() for word in ['show', 'look', 'image', 'visual']):
+                            response = qa_system.answer_question_with_image(prompt)
+                        else:
+                            response = qa_system.answer_question(prompt)
+                        st.markdown(response)
                 
-                # Chat input
-                if prompt := st.chat_input("Ask a question about the analysis:"):
-                    # Add user message to chat history
-                    st.session_state.messages.append({"role": "user", "content": prompt})
-                    with st.chat_message("user"):
-                        st.markdown(prompt)
-                    
-                    # Get AI response
-                    with st.chat_message("assistant"):
-                        with st.spinner("Thinking..."):
-                            if any(word in prompt.lower() for word in ['show', 'look', 'image', 'visual']):
-                                response = qa_system.answer_question_with_image(prompt)
-                            else:
-                                response = qa_system.answer_question(prompt)
-                            st.markdown(response)
-                    
-                    # Add assistant response to chat history
-                    st.session_state.messages.append({"role": "assistant", "content": response})
+                st.session_state.messages.append({"role": "assistant", "content": response})
         
         else:
-            st.info("Upload an X-ray image to begin analysis and ask questions.")
+            st.info("Upload a chest X-ray image to begin analysis")
 
 if __name__ == "__main__":
     main()
