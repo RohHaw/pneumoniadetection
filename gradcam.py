@@ -1,42 +1,62 @@
+from gradcam_base import GradCAM
 import torch
 import cv2
 import numpy as np
 
-class GradCAM:
+class EnhancedGradCAM(GradCAM):
     def __init__(self, model, target_layer):
-        self.model = model
-        self.target_layer = target_layer
-        self.gradients = None
-        self.features = None
+        super().__init__(model, target_layer)
         
-        # Register hooks
-        self.target_layer.register_forward_hook(self.save_features)
-        self.target_layer.register_full_backward_hook(self.save_gradients)
-    
-    def save_features(self, module, input, output):
-        self.features = output.detach()
-    
-    def save_gradients(self, module, grad_input, grad_output):
-        self.gradients = grad_output[0].detach()
-    
-    def generate(self, input_image):
-        # Get the most likely prediction
-        model_output = self.model(input_image)
-        pred_class = model_output.argmax(dim=1)
+    def generate_with_boxes(self, input_image, threshold=0.5):
+        # Generate basic heatmap
+        heatmap = self.generate(input_image)
         
-        # Zero all existing gradients
-        self.model.zero_grad()
+        # Convert heatmap to numpy array
+        heatmap_np = np.uint8(255 * heatmap)
         
-        # Get gradients of the target class
-        model_output[:, pred_class].backward()
+        # Find contours in the heatmap
+        binary = cv2.threshold(heatmap_np, int(255 * threshold), 255, cv2.THRESH_BINARY)[1]
+        contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
-        # Calculate GradCAM
-        pooled_gradients = torch.mean(self.gradients, dim=[0, 2, 3])
-        for i in range(self.features.shape[1]):
-            self.features[:, i, :, :] *= pooled_gradients[i]
+        # Get original image dimensions
+        height, width = heatmap_np.shape
+        
+        # Draw bounding boxes
+        boxes = []
+        for contour in contours:
+            x, y, w, h = cv2.boundingRect(contour)
+            # Scale coordinates to original image size
+            boxes.append({
+                'x': int(x * (input_image.size[0] / width)),
+                'y': int(y * (input_image.size[1] / height)),
+                'width': int(w * (input_image.size[0] / width)),
+                'height': int(h * (input_image.size[1] / height))
+            })
+        
+        return heatmap, boxes
+
+    def get_region_descriptions(self, boxes):
+        descriptions = []
+        for box in boxes:
+            # Calculate position in image (top/bottom, left/right)
+            x_center = box['x'] + box['width']/2
+            y_center = box['y'] + box['height']/2
             
-        heatmap = torch.mean(self.features, dim=1).squeeze()
-        heatmap = torch.relu(heatmap)
-        heatmap /= torch.max(heatmap)
+            position = []
+            if y_center < self.image_height/3:
+                position.append("upper")
+            elif y_center < 2*self.image_height/3:
+                position.append("middle")
+            else:
+                position.append("lower")
+                
+            if x_center < self.image_width/3:
+                position.append("left")
+            elif x_center < 2*self.image_width/3:
+                position.append("central")
+            else:
+                position.append("right")
+                
+            descriptions.append(f"{' '.join(position)} region")
         
-        return heatmap.cpu().numpy()
+        return descriptions
