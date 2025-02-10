@@ -1,0 +1,12 @@
+wandb_version: 1
+
+augmentation_intensity:
+  value: 0.3
+batch_size:
+  value: 128
+dropout:
+  value: 0.2
+learning_rate:
+  value: 1.006708747092229
+weight_decay:
+  value: 1.0026491021516324
