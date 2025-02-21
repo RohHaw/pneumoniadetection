@@ -138,6 +138,7 @@ def main():
 
         else:
             st.info("👆 Upload a chest X-ray image to begin analysis")
+        
 
 if __name__ == "__main__":
     main()

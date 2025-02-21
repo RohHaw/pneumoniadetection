@@ -1,8 +1,7 @@
 import os
-import wandb
 from torchvision import datasets, transforms, models
 import torch
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, random_split, Dataset
 import torch.nn as nn
 import torch.optim as optim
 from sklearn.metrics import precision_recall_fscore_support, confusion_matrix, roc_auc_score
@@ -12,37 +11,28 @@ import numpy as np
 from torch.cuda.amp import GradScaler, autocast
 from torch.optim.lr_scheduler import CosineAnnealingLR
 
-# Initialize wandb
-wandb.init(project="pneumonia-classification", config={
-    "epochs": 20,
-    "batch_size": 64,
-    "learning_rate": 0.001,
-    "weight_decay": 0.0001,
-    "dropout": 0.3,
-    "image_size": 224,
-    "use_amp": True,
-    "patience": 5,
-    "min_delta": 0.001,
-    "class_weights": [1.0, 2.0]  # Adjust based on dataset imbalance
-})
+
 
 # Configuration
 class Config:
-    DATASET_DIR = "archive/chest_xray"
-    IMAGE_SIZE = wandb.config.image_size
-    BATCH_SIZE = wandb.config.batch_size
+    DATASET_DIR = "archive_combined/chest_xray/"  # Directory containing all images
+    IMAGE_SIZE = 224
+    BATCH_SIZE = 64
     NUM_CLASSES = 2
-    EPOCHS = wandb.config.epochs
-    BASE_LR = wandb.config.learning_rate
-    WEIGHT_DECAY = wandb.config.weight_decay
-    DROPOUT = wandb.config.dropout
-    USE_AMP = wandb.config.use_amp
-    PATIENCE = wandb.config.patience
-    MIN_DELTA = wandb.config.min_delta
-    CLASS_WEIGHTS = torch.tensor(wandb.config.class_weights, device=torch.device("cuda" if torch.cuda.is_available() else "cpu"))
+    EPOCHS = 20
+    BASE_LR = 0.001
+    WEIGHT_DECAY = 0.0001
+    DROPOUT = 0.3
+    USE_AMP = True
+    PATIENCE = 5
+    MIN_DELTA = 0.001
+    CLASS_WEIGHTS = torch.tensor([1.0, 2.0], device=torch.device("cuda" if torch.cuda.is_available() else "cpu"))
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    TRAIN_SPLIT = 0.8
+    VAL_SPLIT = 0.1
+    TEST_SPLIT = 0.1
 
-# Enhanced data augmentation
+# Data transforms
 train_transform = transforms.Compose([
     transforms.Resize((Config.IMAGE_SIZE, Config.IMAGE_SIZE)),
     transforms.RandomHorizontalFlip(p=0.5),
@@ -62,7 +52,6 @@ eval_transform = transforms.Compose([
     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 ])
 
-# Early Stopping
 class EarlyStopping:
     def __init__(self, patience=Config.PATIENCE, min_delta=Config.MIN_DELTA):
         self.patience = patience
@@ -82,16 +71,47 @@ class EarlyStopping:
             self.best_loss = val_loss
             self.counter = 0
 
-# Load datasets
-train_dataset = datasets.ImageFolder(os.path.join(Config.DATASET_DIR, "train"), transform=train_transform)
-val_dataset = datasets.ImageFolder(os.path.join(Config.DATASET_DIR, "val"), transform=eval_transform)
-test_dataset = datasets.ImageFolder(os.path.join(Config.DATASET_DIR, "test"), transform=eval_transform)
+class CustomDataset(Dataset):
+    def __init__(self, dataset, transform=None):
+        self.dataset = dataset
+        self.transform = transform
 
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, idx):
+        image, label = self.dataset[idx]
+        if self.transform:
+            image = self.transform(image)
+        return image, label
+
+# Load and split dataset
+print("Loading dataset...")
+full_dataset = datasets.ImageFolder(Config.DATASET_DIR)
+total_size = len(full_dataset)
+train_size = int(Config.TRAIN_SPLIT * total_size)
+val_size = int(Config.VAL_SPLIT * total_size)
+test_size = total_size - train_size - val_size
+
+# Create train, validation, and test splits
+train_subset, val_subset, test_subset = random_split(
+    full_dataset, 
+    [train_size, val_size, test_size],
+    generator=torch.Generator().manual_seed(42)
+)
+
+# Create custom datasets with appropriate transforms
+train_dataset = CustomDataset(train_subset, train_transform)
+val_dataset = CustomDataset(val_subset, eval_transform)
+test_dataset = CustomDataset(test_subset, eval_transform)
+
+# Create data loaders
 train_loader = DataLoader(train_dataset, batch_size=Config.BATCH_SIZE, shuffle=True, num_workers=4, pin_memory=True)
 val_loader = DataLoader(val_dataset, batch_size=Config.BATCH_SIZE, shuffle=False, num_workers=4, pin_memory=True)
 test_loader = DataLoader(test_dataset, batch_size=Config.BATCH_SIZE, shuffle=False, num_workers=4, pin_memory=True)
 
 # Model setup
+print("Setting up model...")
 model = models.resnet50(pretrained=True)
 model.fc = nn.Sequential(
     nn.Dropout(p=Config.DROPOUT),
@@ -99,13 +119,11 @@ model.fc = nn.Sequential(
 )
 model = model.to(Config.DEVICE)
 
-# Loss and optimizer
 criterion = nn.CrossEntropyLoss(weight=Config.CLASS_WEIGHTS)
 optimizer = optim.AdamW(model.parameters(), lr=Config.BASE_LR, weight_decay=Config.WEIGHT_DECAY)
 scheduler = CosineAnnealingLR(optimizer, T_max=Config.EPOCHS)
 scaler = GradScaler(enabled=Config.USE_AMP)
 
-# Training and evaluation functions
 def train(model, dataloader, optimizer, criterion, device, scaler):
     model.train()
     running_loss = 0.0
@@ -131,7 +149,7 @@ def train(model, dataloader, optimizer, criterion, device, scaler):
         total += labels.size(0)
         
         if i % 10 == 0:
-            wandb.log({"Batch Loss": loss.item()})
+            print(f"\rBatch {i}/{len(dataloader)}: Loss = {loss.item():.4f}", end="")
     
     accuracy = correct / total
     return running_loss / len(dataloader), accuracy
@@ -144,7 +162,7 @@ def evaluate(model, dataloader, criterion, device, phase="val"):
     all_probs = []
     
     with torch.no_grad():
-        for i, (inputs, labels) in enumerate(dataloader):
+        for inputs, labels in dataloader:
             inputs, labels = inputs.to(device), labels.to(device)
             
             with autocast(enabled=Config.USE_AMP):
@@ -178,6 +196,8 @@ def evaluate(model, dataloader, criterion, device, phase="val"):
     }
 
 # Training loop
+print(f"\nTraining with {len(train_dataset)} samples, validating with {len(val_dataset)} samples, testing with {len(test_dataset)} samples")
+
 early_stopping = EarlyStopping()
 best_val_f1 = 0.0
 best_epoch = 0
@@ -187,16 +207,14 @@ for epoch in range(Config.EPOCHS):
     
     # Train
     train_loss, train_acc = train(model, train_loader, optimizer, criterion, Config.DEVICE, scaler)
-    wandb.log({"Train Loss": train_loss, "Train Accuracy": train_acc})
+    print(f"\nTrain Loss: {train_loss:.4f}, Train Accuracy: {train_acc:.4f}")
     
     # Validate
     val_metrics = evaluate(model, val_loader, criterion, Config.DEVICE, "val")
-    wandb.log({
-        "Validation Loss": val_metrics['loss'],
-        "Validation Accuracy": val_metrics['accuracy'],
-        "Validation F1": val_metrics['f1'],
-        "Validation ROC-AUC": val_metrics['roc_auc']
-    })
+    print(f"Validation Loss: {val_metrics['loss']:.4f}")
+    print(f"Validation Accuracy: {val_metrics['accuracy']:.4f}")
+    print(f"Validation F1: {val_metrics['f1']:.4f}")
+    print(f"Validation ROC-AUC: {val_metrics['roc_auc']:.4f}")
     
     # Update learning rate
     scheduler.step()
@@ -205,7 +223,7 @@ for epoch in range(Config.EPOCHS):
     if val_metrics['f1'] > best_val_f1:
         best_val_f1 = val_metrics['f1']
         best_epoch = epoch
-        torch.save(model.state_dict(), "best_model_new.pth")
+        torch.save(model.state_dict(), "best_model.pth")
         print("New best model saved!")
     
     # Early stopping
@@ -215,20 +233,18 @@ for epoch in range(Config.EPOCHS):
         break
 
 # Load best model and evaluate on test set
-model.load_state_dict(torch.load("best_model_new.pth"))
+print("\nEvaluating best model on test set...")
+model.load_state_dict(torch.load("best_model_split.pth"))
 test_metrics = evaluate(model, test_loader, criterion, Config.DEVICE, "test")
 
-# Log test metrics
-wandb.log({
-    "Test Accuracy": test_metrics['accuracy'],
-    "Test F1": test_metrics['f1'],
-    "Test ROC-AUC": test_metrics['roc_auc']
-})
-
 # Save results
-with open('model_new_results.txt', 'w') as f:
+with open('model_results_split.txt', 'w') as f:
     f.write("Final Model Results\n")
     f.write("==================\n\n")
+    f.write(f"Dataset Split:\n")
+    f.write(f"Train samples: {len(train_dataset)}\n")
+    f.write(f"Validation samples: {len(val_dataset)}\n")
+    f.write(f"Test samples: {len(test_dataset)}\n\n")
     f.write(f"Best Validation F1: {best_val_f1:.4f} (Epoch {best_epoch+1})\n\n")
     f.write("Test Set Metrics:\n")
     f.write(f"Accuracy: {test_metrics['accuracy']:.4f}\n")
@@ -237,5 +253,4 @@ with open('model_new_results.txt', 'w') as f:
     f.write(f"F1 Score: {test_metrics['f1']:.4f}\n")
     f.write(f"ROC-AUC: {test_metrics['roc_auc']:.4f}\n")
 
-# Finish wandb run
-wandb.finish()
+print("\nTraining completed! Results saved to model_results.txt")
