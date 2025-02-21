@@ -1,0 +1,16 @@
+Final Model Results
+==================
+
+Dataset Split:
+Train samples: 4684
+Validation samples: 585
+Test samples: 587
+
+Best Validation F1: 0.9644 (Epoch 11)
+
+Test Set Metrics:
+Accuracy: 0.9523
+Precision: 0.9525
+Recall: 0.9523
+F1 Score: 0.9524
+ROC-AUC: 0.9847

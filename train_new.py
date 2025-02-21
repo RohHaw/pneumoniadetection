@@ -15,7 +15,7 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 
 # Configuration
 class Config:
-    DATASET_DIR = "archive_combined/chest_xray/"  # Directory containing all images
+    DATASET_DIR = "../archive_combined/"  # Directory containing all images
     IMAGE_SIZE = 224
     BATCH_SIZE = 64
     NUM_CLASSES = 2
@@ -223,7 +223,7 @@ for epoch in range(Config.EPOCHS):
     if val_metrics['f1'] > best_val_f1:
         best_val_f1 = val_metrics['f1']
         best_epoch = epoch
-        torch.save(model.state_dict(), "best_model.pth")
+        torch.save(model.state_dict(), "best_model_split.pth")
         print("New best model saved!")
     
     # Early stopping
@@ -253,4 +253,4 @@ with open('model_results_split.txt', 'w') as f:
     f.write(f"F1 Score: {test_metrics['f1']:.4f}\n")
     f.write(f"ROC-AUC: {test_metrics['roc_auc']:.4f}\n")
 
-print("\nTraining completed! Results saved to model_results.txt")
+print("\nTraining completed! Results saved to model_results_split.txt")
