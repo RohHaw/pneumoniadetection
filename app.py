@@ -9,8 +9,8 @@ import pandas as pd
 from datetime import datetime
 from xray_validator import ChestXrayValidator
 
-def initialize_session_state():
-    """Initialize session state variables"""
+def initialise_session_state():
+    """Initialise session state variables"""
     if 'messages' not in st.session_state:
         st.session_state.messages = []
     if 'analysis_history' not in st.session_state:
@@ -21,7 +21,7 @@ def modern_result_display(results, original_image, gradcam_image):
     # Results cards
     col1, col2 = st.columns([1, 1])
     
-    # Calculate normalized confidence intervals for display
+    # Calculate normalised confidence intervals for display
     normal_ci = results["confidence_interval"]["Normal"]
     pneumonia_ci = results["confidence_interval"]["Pneumonia"]
 
@@ -70,15 +70,15 @@ def modern_result_display(results, original_image, gradcam_image):
         with image_col2:
             st.image(gradcam_image, caption="Areas of Interest (GradCAM)", use_container_width=True)
             if results["class"] == "Normal":
-                st.info("GradCAM visualization is shown due to either elevated pneumonia probability or model uncertainty.")
+                st.info("GradCAM visualisation is shown due to either elevated pneumonia probability or model uncertainty.")
     else:
         # Show only the original image if GradCAM isn't relevant
         st.image(original_image, caption="Original X-Ray", use_container_width=True)
-        st.info("GradCAM visualization is not shown for normal X-rays with high confidence.")
+        st.info("GradCAM visualisation is not shown for normal X-rays with high confidence.")
 
 def main():
     st.set_page_config(page_title="Pneumonia X-Ray Classifier", layout="wide", page_icon="🩺")
-    initialize_session_state()
+    initialise_session_state()
 
     st.title("🩺 Pneumonia X-Ray Classification")
     st.markdown("""
@@ -89,7 +89,7 @@ def main():
     # Get API key
     api_key = os.getenv('GEMINI_API_KEY') or st.secrets['GEMINI_API_KEY']
 
-    # Initialize systems
+    # Initialise systems
     try:
         xray_validator = ChestXrayValidator("xray_validator.pth")
         classifier = PneumoniaClassifier()
@@ -121,7 +121,7 @@ def main():
                     st.warning(f"The system is not completely confident this is a chest X-ray (confidence: {confidence:.1f}%). Please verify the image is correct.")
 
             # Proceed with pneumonia detection only if it's a valid X-ray
-            with st.spinner('Analyzing image...'):
+            with st.spinner('Analysing image...'):
                 try:
                     results = classifier.predict(image)
                     qa_system.set_context(results, image)
