@@ -84,9 +84,6 @@ def main():
         col1, col2 = st.columns([1, 5])
         with col1:
             st.markdown("""
-        <div style='background-color: white; border-radius: 50%; padding: 10px; display: inline-block;'>
-            <img src='https://cdn-icons-png.flaticon.com/512/5263/5263410.png' width='80'>
-        </div>
     """, unsafe_allow_html=True)
         with col2:
             st.title("Pneumonia X-Ray Classifier")
@@ -103,6 +100,14 @@ def main():
         xray_validator, classifier = load_models()
         api_key = os.getenv('GEMINI_API_KEY') or st.secrets.get('GEMINI_API_KEY', None)
         qa_system = ClinicalQA(api_key=api_key) if api_key else None
+        
+        # Restore QA context if it exists
+        if qa_system and 'qa_context' in st.session_state:
+            qa_system.set_context(
+                analysis_results=st.session_state.qa_context['analysis_results'],
+                original_image=st.session_state.qa_context['original_image'],
+                gradcam_image=st.session_state.qa_context['gradcam_image']
+            )
 
     if not xray_validator or not classifier:
         st.error("⚠️ Model loading failed. Please check the logs and try again.")
@@ -192,12 +197,38 @@ def main():
                                     "timestamp": datetime.now()
                                 }
                                 
+                                # Set context for ClinicalQA
+                                if qa_system:
+                                    qa_system.set_context(
+                                        analysis_results=results,
+                                        original_image=display_image,
+                                        gradcam_image=results["gradcam"]
+                                    )
+                                    
+                                    # Store context in session state
+                                    st.session_state.qa_context = {
+                                        'analysis_results': results,
+                                        'original_image': display_image,
+                                        'gradcam_image': results["gradcam"]
+                                    }
+                                
+                                # Generate explanation if pneumonia detected
+                                pneumonia_explanation = None
+                                if results["class"] == "Pneumonia" and qa_system:
+                                    with st.spinner("Generating clinical explanation..."):
+                                        pneumonia_explanation = qa_system.generate_pneumonia_explanation()
+                                
                                 # Add to history
-                                st.session_state.analysis_history.append({
+                                history_entry = {
                                     "timestamp": datetime.now(),
                                     "results": results,
                                     "image": display_image
-                                })
+                                }
+                                
+                                if pneumonia_explanation:
+                                    history_entry["explanation"] = pneumonia_explanation
+                                    
+                                st.session_state.analysis_history.append(history_entry)
                                 limit_history(HISTORY_LIMIT)
                                 
                                 time.sleep(0.5)  # For better UX
@@ -228,14 +259,12 @@ def main():
                 show_welcome_screen()
         
         with right_col:
-            # Display results if available
             if 'last_results' in st.session_state:
                 st.subheader("Analysis Results")
-                
-                # Show result with classification badge
                 results = st.session_state.last_results["results"]
                 pneu_prob = results["probabilities"]["Pneumonia"]
-                
+
+                # Display classification badge
                 if results["class"] == "Pneumonia":
                     st.markdown(f"""
                     <div style='background-color: #FEE2E2; padding: 1rem; border-radius: 5px; margin-bottom: 1rem;'>
@@ -243,6 +272,15 @@ def main():
                         <p style='color: #7F1D1D; margin: 0;'>Probability: {pneu_prob:.1f}%</p>
                     </div>
                     """, unsafe_allow_html=True)
+                    # Display explanation if available
+                    last_item = st.session_state.analysis_history[-1]
+                    if "explanation" in last_item and last_item["explanation"]:
+                        explanation = last_item["explanation"]
+                        if not explanation.startswith("Error") and not explanation.startswith("GradCAM"):
+                            st.markdown("**Clinical Explanation:**")
+                            st.write(explanation)
+                        else:
+                            st.warning("Could not generate clinical explanation due to an error.")
                 else:
                     st.markdown(f"""
                     <div style='background-color: #DCFCE7; padding: 1rem; border-radius: 5px; margin-bottom: 1rem;'>
@@ -275,18 +313,18 @@ def main():
     
     with tab3:
         st.subheader("About this Application")
-    st.markdown("""
-        This application uses deep learning to analyse chest X-rays for signs of pneumonia. 
-        
-        <h4 style='color: #1E40AF;'>How to use:</h4>
-        <ol style='color: #1F2937; margin-left: 1.5rem;'>
-            <li>Upload a chest X-ray image using the file uploader above</li>
-            <li>Click "Analyse X-Ray" to process the image</li>
-            <li>Review the results and visualisation</li>
-            <li>Ask the Clinical Assistant any questions about the analysis</li>
-        </ol>
-        <p style='color: #FFFFFF;'><b>Supported formats:</b> JPG, JPEG, PNG</p>
-    """, unsafe_allow_html=True)
+        st.markdown("""
+            This application uses deep learning to analyse chest X-rays for signs of pneumonia. 
+            
+            <h4 style='color: #1E40AF;'>How to use:</h4>
+            <ol style='color: #1F2937; margin-left: 1.5rem;'>
+                <li>Upload a chest X-ray image using the file uploader above</li>
+                <li>Click "Analyse X-Ray" to process the image</li>
+                <li>Review the results and visualisation</li>
+                <li>Ask the Clinical Assistant any questions about the analysis</li>
+            </ol>
+            <p style='color: #FFFFFF;'><b>Supported formats:</b> JPG, JPEG, PNG</p>
+        """, unsafe_allow_html=True)
 
     # Clinical Assistant Section - Bottom of the page
     st.markdown("---")
@@ -295,31 +333,35 @@ def main():
     if not qa_system:
         st.warning("💡 Clinical QA is unavailable due to missing API key. Configure the GEMINI_API_KEY to enable this feature.")
     else:
-        # Chat interface for clinical questions
-        st.markdown("Ask questions about pneumonia, chest X-rays, or the analysis results")
-        
-        # Display existing messages
-        for message in st.session_state.messages:
-            with st.chat_message(message["role"]):
-                st.markdown(message["content"])
-        
-        # Input for new messages
-        if prompt := st.chat_input("Type your question here..."):
-            # Add user message to chat history
-            st.session_state.messages.append({"role": "user", "content": prompt})
+        # Check if there's an active analysis before showing the chat interface
+        if 'qa_context' not in st.session_state:
+            st.info("👆 Please upload and analyse an X-ray first to use the Clinical Assistant.")
+        else:
+            # Chat interface for clinical questions
+            st.markdown("Ask questions about pneumonia, chest X-rays, or the analysis results")
             
-            # Display user message
-            with st.chat_message("user"):
-                st.markdown(prompt)
+            # Display existing messages
+            for message in st.session_state.messages:
+                with st.chat_message(message["role"]):
+                    st.markdown(message["content"])
             
-            # Generate and display assistant response
-            with st.chat_message("assistant"):
-                with st.spinner("Generating response..."):
-                    response = qa_system.answer_question(prompt)
-                    st.markdown(response)
-            
-            # Add assistant response to chat history
-            st.session_state.messages.append({"role": "assistant", "content": response})
+            # Input for new messages
+            if prompt := st.chat_input("Type your question here..."):
+                # Add user message to chat history
+                st.session_state.messages.append({"role": "user", "content": prompt})
+                
+                # Display user message
+                with st.chat_message("user"):
+                    st.markdown(prompt)
+                
+                # Generate and display assistant response
+                with st.chat_message("assistant"):
+                    with st.spinner("Generating response..."):
+                        response = qa_system.answer_question(prompt)
+                        st.markdown(response)
+                
+                # Add assistant response to chat history
+                st.session_state.messages.append({"role": "assistant", "content": response})
 
     # Sidebar with options
     with st.sidebar:

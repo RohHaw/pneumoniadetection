@@ -1,5 +1,5 @@
 # ui_components.py
-"""UI components for displaying results and visualizations."""
+"""UI components for displaying results and visualisations."""
 
 import streamlit as st
 import plotly.graph_objects as go
@@ -11,14 +11,14 @@ import plotly.graph_objects as go
 
 def interactive_result_display(results, original_image, gradcam_image):
     """
-    Display analysis results with an interactive Plotly chart and image visualizations.
+    Display analysis results with an interactive Plotly chart and image visualisations.
 
     Args:
         results (dict): Dictionary containing class, probabilities, confidence intervals, and GradCAM data.
         original_image (PIL.Image): The original uploaded X-ray image.
         gradcam_image (PIL.Image): The GradCAM heatmap image.
     """
-    result_tabs = st.tabs(["📊 Probability Analysis", "🔬 X-Ray Visualization", "📋 Detailed Results"])
+    result_tabs = st.tabs(["📊 Probability Analysis", "🔬 X-Ray Visualisation", "📋 Detailed Results"])
 
     with result_tabs[0]:
         # Probability analysis with a bar chart
@@ -50,7 +50,7 @@ def interactive_result_display(results, original_image, gradcam_image):
             # Resize GradCAM image to match the original X-ray dimensions
             gradcam_resized = gradcam_image.resize((550, 550))
 
-            st.image(gradcam_resized, caption="GradCAM Visualization - Highlighted Regions of Interest", use_container_width=False)
+            st.image(gradcam_resized, caption="GradCAM Visualisation - Highlighted Regions of Interest", use_container_width=False)
 
             # Explanation of GradCAM
             with st.expander("What is GradCAM?"):
@@ -62,7 +62,7 @@ def interactive_result_display(results, original_image, gradcam_image):
                 For pneumonia detection, GradCAM typically highlights opacities or abnormal lung patterns.
                 """)
         else:
-            st.info("No GradCAM visualization available for normal X-rays.")
+            st.info("No GradCAM visualisation available for normal X-rays.")
 
     with result_tabs[2]:
         # Detailed classification results
@@ -190,12 +190,12 @@ def show_welcome_screen():
         """
         <div class="welcome-container" style='background-color: #EFF6FF; padding: 1.5rem; border-radius: 10px; margin-bottom: 1rem; color: #1F2937;'>
             <h3 style='color: #1E40AF; margin-top: 0;'>Welcome to the Pneumonia X-Ray Classifier</h3>
-            <p style='color: #1F2937;'>This tool uses advanced AI to analyze chest X-rays for signs of pneumonia.</p>
+            <p style='color: #1F2937;'>This tool uses advanced AI to analyse chest X-rays for signs of pneumonia.</p>
             <h4 style='color: #1E40AF;'>How to use:</h4>
             <ol style='color: #1F2937; margin-left: 1.5rem;'>
                 <li>Upload a chest X-ray image using the file uploader above</li>
-                <li>Click "Analyze X-Ray" to process the image</li>
-                <li>Review the results and visualization</li>
+                <li>Click "Analyse X-Ray" to process the image</li>
+                <li>Review the results and visualisation</li>
                 <li>Ask the Clinical Assistant any questions about the analysis</li>
             </ol>
             <p style='color: #1F2937;'><b>Supported formats:</b> JPG, JPEG, PNG</p>
