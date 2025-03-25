@@ -15,5 +15,4 @@ class ResultsDisplay:
             self.render_details_tab()
 
     def render_probability_tab(self):
-        # Move the probability visualization code here
         pass 

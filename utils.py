@@ -1,6 +1,8 @@
 # utils.py
 """Utility functions for the Pneumonia X-Ray Classifier app."""
-
+import sys
+import os
+sys.path.append(os.path.abspath("Training/"))
 import streamlit as st
 from datetime import datetime
 import pandas as pd
@@ -27,7 +29,7 @@ def reset_session_state():
 def load_models():
     """Load and cache the X-ray validator and classifier models."""
     try:
-        xray_validator = ChestXrayValidator("xray_validator.pth")
+        xray_validator = ChestXrayValidator("Training/xray_validator.pth")
         classifier = PneumoniaClassifier()
         return xray_validator, classifier
     except Exception as e:

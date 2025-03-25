@@ -12,7 +12,6 @@ class GradCAM:
         self.image_width = None
         self.image_height = None
         
-        # Register hooks
         self.hooks = []
         self._register_hooks()
         
@@ -49,49 +48,89 @@ class GradCAM:
         gradients = self.gradients
         features = self.features
         
+        if gradients is None or features is None:
+            raise ValueError("Gradients or features are None. Ensure hooks are properly set up and the backward pass completed.")
+        
         weights = torch.mean(gradients, dim=(2, 3), keepdim=True)
         cam = torch.sum(weights * features, dim=1, keepdim=True)
         cam = F.relu(cam)
         
         cam = F.interpolate(cam, size=(self.image_height, self.image_width), mode='bilinear', align_corners=False)
         cam -= cam.min()
-        cam /= cam.max() + 1e-8  # Avoid division by zero
+        cam /= cam.max() + 1e-8
         
         return cam.squeeze().cpu().numpy()
         
     def __del__(self):
         self._release_hooks()
 
-class EnhancedGradCAM(GradCAM):
-    def __init__(self, model, target_layer):
-        super().__init__(model, target_layer)
+class GradCAMPlusPlus(GradCAM):
+    def generate(self, input_tensor):
+        if isinstance(input_tensor, torch.Tensor):
+            self.image_height = input_tensor.size(-2)
+            self.image_width = input_tensor.size(-1)
         
-    def generate_with_boxes(self, input_image, threshold=0.4, max_area_fraction=0.5, min_area_fraction=0.05, original_width=None, original_height=None):
-        """
-        Generate heatmap and bounding boxes, filtering out overly large and small boxes, and merging overlapping boxes.
+        self.model.zero_grad()
+        output = self.model(input_tensor)
         
-        Args:
-            input_image: Input tensor
-            threshold: Threshold for binary image (0-1)
-            max_area_fraction: Maximum fraction of image area a box can occupy
-            min_area_fraction: Minimum fraction of image area a box must occupy
-            original_width: Original image width (e.g., 1024)
-            original_height: Original image height (e.g., 1024)
-        """
+        score = output.max()
+        score.backward()
+        
+        gradients = self.gradients  # Shape: (batch, channels, height, width)
+        features = self.features    # Shape: (batch, channels, height, width)
+        
+        if gradients is None or features is None:
+            raise ValueError("Gradients or features are None. Ensure hooks are properly set up and the backward pass completed.")
+        
+        # Compute GradCAM++ weights
+        alpha_num = gradients ** 2
+        alpha_denom = 2 * gradients ** 2 + torch.sum(features * gradients ** 3, dim=(2, 3), keepdim=True)
+        alpha = alpha_num / (alpha_denom + 1e-8)  # Shape: (batch, channels, height, width)
+        
+        weights = torch.sum(F.relu(gradients) * alpha, dim=(2, 3), keepdim=True)  # Shape: (batch, channels, 1, 1)
+        cam = torch.sum(weights * features, dim=1, keepdim=True)  # Shape: (batch, 1, height, width)
+        cam = F.relu(cam)
+        
+        cam = F.interpolate(cam, size=(self.image_height, self.image_width), mode='bilinear', align_corners=False)
+        cam -= cam.min()
+        cam /= cam.max() + 1e-8
+        
+        return cam.squeeze().cpu().numpy()
+
+class EnhancedGradCAM:
+    def __init__(self, model, target_layer, threshold=0.4, max_area_fraction=0.5, 
+                 min_area_fraction=0.05, use_morph_ops=True, use_gradcam_plus_plus=False):
+        if use_gradcam_plus_plus:
+            self.gradcam = GradCAMPlusPlus(model, target_layer)
+        else:
+            self.gradcam = GradCAM(model, target_layer)
+        self.threshold = threshold
+        self.max_area_fraction = max_area_fraction
+        self.min_area_fraction = min_area_fraction
+        self.use_morph_ops = use_morph_ops
+        self.image_width = None
+        self.image_height = None
+        
+    def generate(self, input_tensor):
+        if isinstance(input_tensor, torch.Tensor):
+            self.image_height = input_tensor.size(-2)
+            self.image_width = input_tensor.size(-1)
+        return self.gradcam.generate(input_tensor)
+
+    def generate_with_boxes(self, input_image, original_width=None, original_height=None):
         heatmap = self.generate(input_image)
         
-        # Debug: Print heatmap statistics
         print(f"Heatmap min: {heatmap.min():.4f}, max: {heatmap.max():.4f}, mean: {heatmap.mean():.4f}")
         
-        # Normalize heatmap to [0, 1] explicitly
         heatmap = (heatmap - heatmap.min()) / (heatmap.max() - heatmap.min() + 1e-8)
         
         heatmap_np = np.uint8(255 * heatmap)
-        binary = cv2.threshold(heatmap_np, int(255 * threshold), 255, cv2.THRESH_BINARY)[1]
+        binary = cv2.threshold(heatmap_np, int(255 * self.threshold), 255, cv2.THRESH_BINARY)[1]
         
-        kernel = np.ones((5, 5), np.uint8)
-        binary = cv2.erode(binary, kernel, iterations=1)
-        binary = cv2.dilate(binary, kernel, iterations=1)
+        if self.use_morph_ops:
+            kernel = np.ones((5, 5), np.uint8)
+            binary = cv2.erode(binary, kernel, iterations=1)
+            binary = cv2.dilate(binary, kernel, iterations=1)
         
         contours, _ = cv2.findContours(binary, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
         
@@ -106,9 +145,8 @@ class EnhancedGradCAM(GradCAM):
             x, y, w, h = cv2.boundingRect(contour)
             box_area = w * h
             
-            # Filter boxes by area
-            if (box_area / image_area <= max_area_fraction and 
-                box_area / image_area >= min_area_fraction and 
+            if (box_area / image_area <= self.max_area_fraction and 
+                box_area / image_area >= self.min_area_fraction and 
                 w > 5 and h > 5):
                 box = {
                     'x': int(x * scale_width),
@@ -116,21 +154,18 @@ class EnhancedGradCAM(GradCAM):
                     'width': int(w * scale_width),
                     'height': int(h * scale_height)
                 }
-                # Clip to image bounds
                 box['x'] = max(0, min(box['x'], original_width - 1))
                 box['y'] = max(0, min(box['y'], original_height - 1))
                 box['width'] = min(box['width'], original_width - box['x'])
                 box['height'] = min(box['height'], original_height - box['y'])
                 boxes.append(box)
         
-        # Merge overlapping boxes
         merged_boxes = []
         while boxes:
             box = boxes.pop(0)
             i = 0
             while i < len(boxes):
                 other = boxes[i]
-                # Check for overlap (IoU > 0.3)
                 x1_min, y1_min = box['x'], box['y']
                 x1_max, y1_max = x1_min + box['width'], y1_min + box['height']
                 x2_min, y2_min = other['x'], other['y']
@@ -148,7 +183,7 @@ class EnhancedGradCAM(GradCAM):
                 
                 iou = inter_area / union_area if union_area > 0 else 0
                 
-                if iou > 0.3:  # Merge if IoU > 0.3
+                if iou > 0.3:
                     merged_box = {
                         'x': min(box['x'], other['x']),
                         'y': min(box['y'], other['y']),
