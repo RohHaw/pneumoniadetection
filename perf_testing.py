@@ -11,11 +11,10 @@ import logging
 import psutil
 import pandas as pd
 from gradcam import EnhancedGradCAM  # Assuming this is in gradcam.py
-from clinical_qa import ClinicalQA  # Assuming this is in clinical_qa.py
 
 # Set up logging to a file for debugging (optional)
 logging.basicConfig(
-    filename='pneumonia_classifier_performance.log',
+    filename='pneumonia_classifier_performance_100.log',
     level=logging.INFO,
     format='%(asctime)s - %(message)s'
 )
@@ -62,8 +61,8 @@ class PneumoniaClassifier(nn.Module):
     def forward(self, x):
         return self.model(x)
 
-    def predict_with_metrics(self, image, qa_system=None):
-        """Predict pneumonia with detailed performance metrics."""
+    def predict_with_metrics(self, image):
+        """Predict pneumonia with detailed performance metrics, without ClinicalQA."""
         metrics = {}
 
         # Start total timing
@@ -124,6 +123,15 @@ class PneumoniaClassifier(nn.Module):
             cv2.rectangle(superimposed, (x, y), (x + w, y + h), (0, 255, 0), 2)
         metrics['gradcam_time'] = time.time() - gradcam_start
 
+        # Total time
+        metrics['total_time'] = time.time() - total_start_time
+
+        # Prediction details
+        metrics['predicted_class'] = self.classes[pred_class]
+        metrics['confidence_percent'] = confidence * 100
+        metrics['normal_prob_percent'] = mean_pred[0][0] * 100
+        metrics['pneumonia_prob_percent'] = mean_pred[0][1] * 100
+
         # Prepare results
         results = {
             'class': self.classes[pred_class],
@@ -149,37 +157,13 @@ class PneumoniaClassifier(nn.Module):
             'region_descriptions': descriptions
         }
 
-        # ClinicalQA text generation (if pneumonia detected and QA system provided)
-        metrics['clinicalqa_time'] = 0.0
-        metrics['clinicalqa_success'] = False
-        if qa_system and results['class'] == 'Pneumonia':
-            qa_system.set_context(results, image, results['gradcam'])
-            clinicalqa_start = time.time()
-            explanation = qa_system.generate_pneumonia_explanation()
-            metrics['clinicalqa_time'] = time.time() - clinicalqa_start
-            metrics['clinicalqa_success'] = not explanation.startswith("Error") if explanation else False
-
-        # Total time
-        metrics['total_time'] = time.time() - total_start_time
-
-        # Prediction details
-        metrics['predicted_class'] = self.classes[pred_class]
-        metrics['confidence_percent'] = confidence * 100
-        metrics['normal_prob_percent'] = mean_pred[0][0] * 100
-        metrics['pneumonia_prob_percent'] = mean_pred[0][1] * 100
-
         return results, metrics
 
-def run_experiment(image_dir, num_images=10, api_key=None):
+def run_experiment(image_dir, num_images=100):
     """Run an automated experiment on multiple images and save metrics to CSV."""
     # Load classifier
     print("Loading PneumoniaClassifier...")
     classifier = PneumoniaClassifier()
-
-    # Load ClinicalQA if API key is provided
-    qa_system = ClinicalQA(api_key=api_key) if api_key else None
-    if not qa_system:
-        print("Warning: ClinicalQA not initialized due to missing API key.")
 
     # Get list of image files
     supported_extensions = ('.jpg', '.jpeg', '.png')
@@ -201,7 +185,7 @@ def run_experiment(image_dir, num_images=10, api_key=None):
         try:
             image = Image.open(image_path).convert('RGB')
             start_time = time.time()
-            results, metrics = classifier.predict_with_metrics(image, qa_system)
+            results, metrics = classifier.predict_with_metrics(image)
             process_time = time.time() - start_time
             
             # Add image name and total process time to metrics
@@ -212,7 +196,6 @@ def run_experiment(image_dir, num_images=10, api_key=None):
             logging.info(f"Image: {image_file}, Total Time: {metrics['total_time']:.3f}s, "
                         f"Classification: {metrics['classification_time']:.3f}s, "
                         f"GradCAM: {metrics['gradcam_time']:.3f}s, "
-                        f"ClinicalQA: {metrics['clinicalqa_time']:.3f}s, "
                         f"Class: {metrics['predicted_class']}, Confidence: {metrics['confidence_percent']:.1f}%")
             
             all_metrics.append(metrics)
@@ -222,17 +205,16 @@ def run_experiment(image_dir, num_images=10, api_key=None):
             logging.error(f"Error processing {image_file}: {str(e)}")
             print(f"Error processing {image_file}: {str(e)}")
 
-    # Save metrics to CSV
+    # Save metrics to CSV with a new file name
     df = pd.DataFrame(all_metrics)
-    csv_file = "pneumonia_classifier_metrics.csv"
+    csv_file = "pneumonia_classifier_metrics_100.csv"
     df.to_csv(csv_file, index=False)
     print(f"\nExperiment complete. Metrics saved to {csv_file}")
 
 if __name__ == "__main__":
     # Configuration
     IMAGE_DIR = "/uolstore/home/users/sc21r2h/Documents/Year3/Dissertation/archive_combined/PNEUMONIA" 
-    NUM_IMAGES = 10
-    API_KEY = os.getenv('GEMINI_API_KEY')  # Set your Gemini API key here or in environment variable
+    NUM_IMAGES = 100
     
     # Run the experiment
-    run_experiment(IMAGE_DIR, NUM_IMAGES, API_KEY)
+    run_experiment(IMAGE_DIR, NUM_IMAGES)
