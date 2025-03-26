@@ -1,0 +1,15 @@
+RSNA Model Results
+==================
+
+Train samples: 24181
+Validation samples: 6046
+Test samples: 3000
+
+Best Validation F1: 0.8249 (Epoch 12)
+
+Validation Metrics:
+Accuracy: 0.8187
+Precision: 0.8294
+Recall: 0.8187
+F1 Score: 0.8217
+ROC-AUC: 0.9016

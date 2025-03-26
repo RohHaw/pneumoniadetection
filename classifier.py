@@ -8,8 +8,8 @@ import numpy as np
 from gradcam import EnhancedGradCAM
 
 class PneumoniaClassifier(nn.Module):
-    def __init__(self, model_path="Training/best_model_split_vis.pth", mc_dropout_iterations=20, 
-                 dropout=0.5, target_layer="layer4[-1]", input_size=224, 
+    def __init__(self, model_path="Training/best_rsna_model.pth", mc_dropout_iterations=20, 
+                 dropout=0.3, target_layer="layer4[-1]", input_size=224, 
                  threshold=0.4, max_area_fraction=0.5, min_area_fraction=0.03, 
                  use_morph_ops=True, use_gradcam_plus_plus=False):
         super(PneumoniaClassifier, self).__init__()
