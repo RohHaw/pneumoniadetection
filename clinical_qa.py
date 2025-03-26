@@ -137,6 +137,7 @@ class ClinicalQA:
             - Do NOT speculate on specific anatomical locations unless clearly visible in the GradCAM
             - Focus ONLY on explaining what the model detected rather than inferring clinical conditions
             - If you cannot answer based solely on the model's output and GradCAM, state that limitation
+            - Use british english when responding
             
             Question: {question}"""
             

@@ -1,0 +1,14 @@
+Evaluation Results on New Dataset
+================================
+
+Dataset Path: /uolstore/home/users/sc21r2h/Documents/Year3/Dissertation/archive_combined
+Total Images: 5856
+Class Distribution: {'NORMAL': 1583, 'PNEUMONIA': 4273}
+
+Accuracy: 0.6149
+Precision: 0.8254
+Recall: 0.6149
+F1 Score: 0.6278
+ROC-AUC: 0.9057
+Confusion Matrix:
+[[1539, 44], [2211, 2062]]

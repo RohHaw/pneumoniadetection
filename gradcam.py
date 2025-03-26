@@ -3,18 +3,22 @@ import torch.nn.functional as F
 import numpy as np
 import cv2
 
-class GradCAM:
-    def __init__(self, model, target_layer):
+class EnhancedGradCAM:
+    def __init__(self, model, target_layer, threshold=0.4, max_area_fraction=0.5, 
+                 min_area_fraction=0.05, use_morph_ops=True):
         self.model = model
         self.target_layer = target_layer
-        self.gradients = None
-        self.features = None
+        self.threshold = threshold
+        self.max_area_fraction = max_area_fraction
+        self.min_area_fraction = min_area_fraction
+        self.use_morph_ops = use_morph_ops
         self.image_width = None
         self.image_height = None
-        
+        self.gradients = None
+        self.features = None
         self.hooks = []
         self._register_hooks()
-        
+
     def _register_hooks(self):
         def save_gradient(grad):
             self.gradients = grad.detach()
@@ -26,14 +30,13 @@ class GradCAM:
         handle_backward = self.target_layer.register_full_backward_hook(
             lambda module, grad_input, grad_output: save_gradient(grad_output[0])
         )
-        
         self.hooks.extend([handle_forward, handle_backward])
-        
+
     def _release_hooks(self):
         for hook in self.hooks:
             hook.remove()
         self.hooks.clear()
-            
+
     def generate(self, input_tensor):
         if isinstance(input_tensor, torch.Tensor):
             self.image_height = input_tensor.size(-2)
@@ -41,7 +44,6 @@ class GradCAM:
         
         self.model.zero_grad()
         output = self.model(input_tensor)
-        
         score = output.max()
         score.backward()
         
@@ -49,7 +51,7 @@ class GradCAM:
         features = self.features
         
         if gradients is None or features is None:
-            raise ValueError("Gradients or features are None. Ensure hooks are properly set up and the backward pass completed.")
+            raise ValueError("Gradients or features are None.")
         
         weights = torch.mean(gradients, dim=(2, 3), keepdim=True)
         cam = torch.sum(weights * features, dim=1, keepdim=True)
@@ -60,72 +62,15 @@ class GradCAM:
         cam /= cam.max() + 1e-8
         
         return cam.squeeze().cpu().numpy()
-        
-    def __del__(self):
-        self._release_hooks()
 
-class GradCAMPlusPlus(GradCAM):
-    def generate(self, input_tensor):
-        if isinstance(input_tensor, torch.Tensor):
-            self.image_height = input_tensor.size(-2)
-            self.image_width = input_tensor.size(-1)
-        
-        self.model.zero_grad()
-        output = self.model(input_tensor)
-        
-        score = output.max()
-        score.backward()
-        
-        gradients = self.gradients  # Shape: (batch, channels, height, width)
-        features = self.features    # Shape: (batch, channels, height, width)
-        
-        if gradients is None or features is None:
-            raise ValueError("Gradients or features are None. Ensure hooks are properly set up and the backward pass completed.")
-        
-        # Compute GradCAM++ weights
-        alpha_num = gradients ** 2
-        alpha_denom = 2 * gradients ** 2 + torch.sum(features * gradients ** 3, dim=(2, 3), keepdim=True)
-        alpha = alpha_num / (alpha_denom + 1e-8)  # Shape: (batch, channels, height, width)
-        
-        weights = torch.sum(F.relu(gradients) * alpha, dim=(2, 3), keepdim=True)  # Shape: (batch, channels, 1, 1)
-        cam = torch.sum(weights * features, dim=1, keepdim=True)  # Shape: (batch, 1, height, width)
-        cam = F.relu(cam)
-        
-        cam = F.interpolate(cam, size=(self.image_height, self.image_width), mode='bilinear', align_corners=False)
-        cam -= cam.min()
-        cam /= cam.max() + 1e-8
-        
-        return cam.squeeze().cpu().numpy()
-
-class EnhancedGradCAM:
-    def __init__(self, model, target_layer, threshold=0.4, max_area_fraction=0.5, 
-                 min_area_fraction=0.05, use_morph_ops=True, use_gradcam_plus_plus=False):
-        if use_gradcam_plus_plus:
-            self.gradcam = GradCAMPlusPlus(model, target_layer)
-        else:
-            self.gradcam = GradCAM(model, target_layer)
-        self.threshold = threshold
-        self.max_area_fraction = max_area_fraction
-        self.min_area_fraction = min_area_fraction
-        self.use_morph_ops = use_morph_ops
-        self.image_width = None
-        self.image_height = None
-        
-    def generate(self, input_tensor):
-        if isinstance(input_tensor, torch.Tensor):
-            self.image_height = input_tensor.size(-2)
-            self.image_width = input_tensor.size(-1)
-        return self.gradcam.generate(input_tensor)
-
-    def generate_with_boxes(self, input_image, original_width=None, original_height=None):
+    def generate_with_boxes(self, input_image, threshold=None, max_area_fraction=None, 
+                           min_area_fraction=None, original_width=None, original_height=None):
         heatmap = self.generate(input_image)
-        
-        print(f"Heatmap min: {heatmap.min():.4f}, max: {heatmap.max():.4f}, mean: {heatmap.mean():.4f}")
-        
         heatmap = (heatmap - heatmap.min()) / (heatmap.max() - heatmap.min() + 1e-8)
         
         heatmap_np = np.uint8(255 * heatmap)
-        binary = cv2.threshold(heatmap_np, int(255 * self.threshold), 255, cv2.THRESH_BINARY)[1]
+        thresh = threshold if threshold is not None else self.threshold
+        binary = cv2.threshold(heatmap_np, int(255 * thresh), 255, cv2.THRESH_BINARY)[1]
         
         if self.use_morph_ops:
             kernel = np.ones((5, 5), np.uint8)
@@ -140,13 +85,15 @@ class EnhancedGradCAM:
         scale_width = original_width / width if original_width else 1
         scale_height = original_height / height if original_height else 1
         
+        max_area_frac = max_area_fraction if max_area_fraction is not None else self.max_area_fraction
+        min_area_frac = min_area_fraction if min_area_fraction is not None else self.min_area_fraction
+        
         boxes = []
         for contour in contours:
             x, y, w, h = cv2.boundingRect(contour)
             box_area = w * h
-            
-            if (box_area / image_area <= self.max_area_fraction and 
-                box_area / image_area >= self.min_area_fraction and 
+            if (box_area / image_area <= max_area_frac and 
+                box_area / image_area >= min_area_frac and 
                 w > 5 and h > 5):
                 box = {
                     'x': int(x * scale_width),
@@ -196,7 +143,6 @@ class EnhancedGradCAM:
                     i += 1
             merged_boxes.append(box)
         
-        print(f"Number of boxes after merging: {len(merged_boxes)}")
         return heatmap, merged_boxes
 
     def get_region_descriptions(self, boxes):
@@ -223,3 +169,6 @@ class EnhancedGradCAM:
             descriptions.append(f"{' '.join(position)} region")
         
         return descriptions
+
+    def __del__(self):
+        self._release_hooks()

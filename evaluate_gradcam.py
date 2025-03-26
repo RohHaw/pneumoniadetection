@@ -9,7 +9,7 @@ import json
 # Paths to RSNA dataset
 data_dir = "D:/rsna_data/train_images"  # Adjust if your .dcm files are elsewhere
 csv_path = "D:/rsna_data/labels/stage_2_train_labels.csv"
-model_path = "Training/best_rsna_model.pth"
+model_path = "Training/UCSD/model_UCSD.py"
 
 # Verify directory exists
 if not os.path.exists(data_dir):

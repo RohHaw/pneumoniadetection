@@ -8,57 +8,43 @@ import numpy as np
 from gradcam import EnhancedGradCAM
 
 class PneumoniaClassifier(nn.Module):
-    def __init__(self, model_path="Training/best_rsna_model.pth", mc_dropout_iterations=20, 
-                 dropout=0.3, target_layer="layer4[-1]", input_size=224, 
-                 threshold=0.4, max_area_fraction=0.5, min_area_fraction=0.03, 
-                 use_morph_ops=True, use_gradcam_plus_plus=False):
+    def __init__(self, model_path="Training/UCSD/model_UCSD.pth", mc_dropout_iterations=20, dropout=0.5):
         super(PneumoniaClassifier, self).__init__()
-        
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.model = models.resnet50(weights=None)  # Updated to use weights=None instead of pretrained=False
+
+        # Load ResNet-50 with no pretrained weights
+        self.model = models.resnet50(weights=None)
         self.model.fc = nn.Sequential(
             nn.Dropout(p=dropout),
             nn.Linear(self.model.fc.in_features, 2)
         )
 
+        # Load trained weights
         if model_path and os.path.exists(model_path):
-            self.model.load_state_dict(torch.load(model_path, map_location=self.device))
+            self.model.load_state_dict(torch.load(model_path, map_location=self.device, weights_only=True))
         
         self.model.to(self.device)
         self.model.eval()
 
         self.mc_dropout_iterations = mc_dropout_iterations
 
+        # Enable dropout during inference
         def enable_dropout(m):
             if isinstance(m, nn.Dropout):
                 m.train()
         self.enable_dropout = enable_dropout
 
-        # Dynamically access the target layer
-        layer_dict = {
-            "layer4[-1]": self.model.layer4[-1],
-            "layer4[-2]": self.model.layer4[-2],
-            "layer3[-1]": self.model.layer3[-1]
-        }
-        # Pass the parameters to EnhancedGradCAM
-        self.grad_cam = EnhancedGradCAM(
-            self.model, 
-            layer_dict[target_layer],
-            threshold=threshold,
-            max_area_fraction=max_area_fraction,
-            min_area_fraction=min_area_fraction,
-            use_morph_ops=use_morph_ops,
-            use_gradcam_plus_plus=use_gradcam_plus_plus
-        )
+        # GradCAM
+        self.grad_cam = EnhancedGradCAM(self.model, self.model.layer3[-1])
 
+        # Image transformations
         self.transform = transforms.Compose([
-            transforms.Resize((input_size, input_size)),
+            transforms.Resize((224, 224)),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         ])
 
         self.classes = ['Normal', 'Pneumonia']
-        self.input_size = input_size
 
     def forward(self, x):
         return self.model(x)
@@ -84,7 +70,10 @@ class PneumoniaClassifier(nn.Module):
         confidence = mean_pred[0][pred_class]
 
         heatmap, boxes = self.grad_cam.generate_with_boxes(
-            image_tensor, 
+            image_tensor,
+            threshold=0.4,
+            max_area_fraction=0.5,
+            min_area_fraction=0.03,
             original_width=original_width,
             original_height=original_height
         )
@@ -112,11 +101,11 @@ class PneumoniaClassifier(nn.Module):
             },
             'confidence_interval': {
                 'Normal': (
-                    mean_pred[0][0] * 100 - 1.96 * std_pred[0][0] * 100, 
+                    mean_pred[0][0] * 100 - 1.96 * std_pred[0][0] * 100,
                     mean_pred[0][0] * 100 + 1.96 * std_pred[0][0] * 100
                 ),
                 'Pneumonia': (
-                    mean_pred[0][1] * 100 - 1.96 * std_pred[0][1] * 100, 
+                    mean_pred[0][1] * 100 - 1.96 * std_pred[0][1] * 100,
                     mean_pred[0][1] * 100 + 1.96 * std_pred[0][1] * 100
                 )
             },
