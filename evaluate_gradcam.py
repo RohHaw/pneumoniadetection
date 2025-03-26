@@ -1,141 +1,200 @@
 import os
-import pandas as pd
+import torch
 from PIL import Image
-import numpy as np
 import pydicom
-from classifier import PneumoniaClassifier
-import json
+import pandas as pd
+import numpy as np
+import cv2
+from classifier import PneumoniaClassifier  # Your custom classifier
 
-# Paths to RSNA dataset
-data_dir = "D:/rsna_data/train_images"  # Adjust if your .dcm files are elsewhere
-csv_path = "D:/rsna_data/labels/stage_2_train_labels.csv"
-model_path = "Training/UCSD/model_UCSD.py"
+# Paths
+data_dir = "/vol/scratch/SoC/misc/2024/sc21r2h/rsna_data/train_images"
+csv_path = "/vol/scratch/SoC/misc/2024/sc21r2h/rsna_data/labels/stage_2_train_labels.csv"
+model_path = "Training/UCSD/model_RSNA.pth"
+output_dir = "evaluation_images_and_data/RSNA_Model/gradcam_eval"
 
-# Verify directory exists
-if not os.path.exists(data_dir):
-    raise FileNotFoundError(f"Data directory not found: {data_dir}. Please check the path.")
-print(f"Data directory: {data_dir}")
-print(f"First 5 files in directory: {os.listdir(data_dir)[:5]}")
+# Create output directory if it doesn't exist
+os.makedirs(output_dir, exist_ok=True)
 
-# Load a subset of RSNA data for testing
-print(f"Loading CSV from: {csv_path}")
-df = pd.read_csv(csv_path)
-print(f"CSV loaded. Total pneumonia cases: {len(df[df['Target'] == 1].dropna())}")
+# Load the RSNA labels
+labels_df = pd.read_csv(csv_path)
 
-pneumonia_df = df[df['Target'] == 1].dropna().sample(200, random_state=42)  # 200 images with bounding boxes
-print(f"Selected {len(pneumonia_df)} pneumonia cases. Sample patientIds:\n{pneumonia_df['patientId'].tolist()[:5]}")
+# Initialize the classifier
+classifier = PneumoniaClassifier(model_path=model_path)
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+classifier.to(device)
 
-# Construct image paths and ground truth boxes
-image_paths = [os.path.join(data_dir, f"{pid}.dcm") for pid in pneumonia_df['patientId']]
-ground_truth_boxes = [
-    [{'x': row['x'], 'y': row['y'], 'width': row['width'], 'height': row['height']}]
-    for _, row in pneumonia_df.iterrows()
-]
+def load_dicom_image(file_path):
+    """Load a DICOM image and convert it to a PIL Image."""
+    dicom = pydicom.dcmread(file_path)
+    image = dicom.pixel_array
+    # Normalize to 0-255 range
+    image = (image - image.min()) / (image.max() - image.min()) * 255
+    image = image.astype(np.uint8)
+    # Convert to RGB
+    image = np.stack([image] * 3, axis=-1)
+    return Image.fromarray(image)
 
-# Function to load and convert DICOM to PIL Image
-def load_dicom_as_pil(dicom_path):
-    """Convert a DICOM file to a PIL Image in RGB format."""
-    print(f"Attempting to load: {dicom_path}")
-    try:
-        if not os.path.exists(dicom_path):
-            print(f"File does not exist: {dicom_path}")
-            return None
-        dicom = pydicom.dcmread(dicom_path)
-        image = dicom.pixel_array
-        # Normalize pixel values to 0-255
-        image = (image - image.min()) / (image.max() - image.min() + 1e-6) * 255
-        image = Image.fromarray(image.astype(np.uint8)).convert('RGB')
-        print(f"Successfully loaded: {dicom_path}")
-        return image
-    except Exception as e:
-        print(f"Error loading {dicom_path}: {str(e)}")
-        return None
+def get_ground_truth_boxes(patient_id, labels_df):
+    """Extract ground truth bounding boxes from the RSNA labels CSV."""
+    patient_data = labels_df[labels_df['patientId'] == patient_id]
+    boxes = []
+    for _, row in patient_data.iterrows():
+        if row['Target'] == 1:  # Positive pneumonia case
+            boxes.append({
+                'x': int(row['x']),
+                'y': int(row['y']),
+                'width': int(row['width']),
+                'height': int(row['height'])
+            })
+    return boxes
 
-# Load test images with error handling
-test_images = []
-valid_ground_truth_boxes = []
-skipped_images = []
-for path, gt_boxes in zip(image_paths, ground_truth_boxes):
-    img = load_dicom_as_pil(path)
-    if img is not None:
-        test_images.append(img)
-        valid_ground_truth_boxes.append(gt_boxes)
-    else:
-        skipped_images.append(path)
+def calculate_iou(box1, box2):
+    """Calculate IoU between two bounding boxes."""
+    x1_min = box1['x']
+    y1_min = box1['y']
+    x1_max = x1_min + box1['width']
+    y1_max = y1_min + box1['height']
 
-if not test_images:
-    print(f"Directory contents (first 5 files): {os.listdir(data_dir)[:5]}")
-    raise ValueError("No valid images loaded. Check if patientIds match file names in the directory.")
-if skipped_images:
-    print(f"Skipped {len(skipped_images)} images due to errors: {skipped_images}")
+    x2_min = box2['x']
+    y2_min = box2['y']
+    x2_max = x2_min + box2['width']
+    y2_max = y2_min + box2['height']
 
-def compute_iou(pred_box, gt_box):
-    """Compute IoU between a predicted box and a ground truth box."""
-    x1, y1, w1, h1 = pred_box['x'], pred_box['y'], pred_box['width'], pred_box['height']
-    x2, y2, w2, h2 = gt_box['x'], gt_box['y'], gt_box['width'], gt_box['height']
-    
-    inter_xmin = max(x1, x2)
-    inter_ymin = max(y1, y2)
-    inter_xmax = min(x1 + w1, x2 + w2)
-    inter_ymax = min(y1 + h1, y2 + h2)
-    
-    inter_area = max(0, inter_xmax - inter_xmin) * max(0, inter_ymax - inter_ymin)
-    union_area = w1 * h1 + w2 * h2 - inter_area
-    
+    inter_x_min = max(x1_min, x2_min)
+    inter_y_min = max(y1_min, y2_min)
+    inter_x_max = min(x1_max, x2_max)
+    inter_y_max = min(y1_max, y2_max)
+
+    inter_area = max(0, inter_x_max - inter_x_min) * max(0, inter_y_max - inter_y_min)
+    box1_area = box1['width'] * box1['height']
+    box2_area = box2['width'] * box2['height']
+    union_area = box1_area + box2_area - inter_area
+
     return inter_area / union_area if union_area > 0 else 0
 
-def evaluate_iou(classifier, images, gt_boxes_list):
-    """Evaluate IoU for a set of images and ground truth boxes."""
-    iou_scores = []
-    for img, gt_boxes in zip(images, gt_boxes_list):
-        results = classifier.predict(img)
-        pred_boxes = results.get('boxes', [])
-        
-        if not pred_boxes:  # No boxes detected
-            iou_scores.append(0)
-            continue
-        
-        # Find the best IoU for each ground truth box
-        max_iou = 0
-        for gt_box in gt_boxes:
-            ious = [compute_iou(pred_box, gt_box) for pred_box in pred_boxes]
-            max_iou = max(max_iou, max(ious) if ious else 0)
-        iou_scores.append(max_iou)
+def save_visualization(image, pred_boxes, gt_boxes, patient_id, output_dir):
+    """Save an image with predicted and ground truth boxes overlaid."""
+    image_np = np.array(image)
+    # Draw predicted boxes (green)
+    for box in pred_boxes:
+        x, y, w, h = box['x'], box['y'], box['width'], box['height']
+        cv2.rectangle(image_np, (x, y), (x + w, y + h), (0, 255, 0), 2)  # Green for predicted
+    # Draw ground truth boxes (red)
+    for box in gt_boxes:
+        x, y, w, h = box['x'], box['y'], box['width'], box['height']
+        cv2.rectangle(image_np, (x, y), (x + w, y + h), (0, 0, 255), 2)  # Red for ground truth
     
-    return np.mean(iou_scores), iou_scores
+    # Save the image
+    output_path = os.path.join(output_dir, f"{patient_id}_gradcam_eval.png")
+    cv2.imwrite(output_path, cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR))
+    return output_path
 
-# Use the best hyperparameters
-best_threshold = 0.4
-best_max_area = 0.6
-best_min_area = 0.005
+def test_gradcam_iou(num_samples=200, num_images_to_save=20):
+    """Test IoU of GradCAM bounding boxes, save raw data, and select 20 images."""
+    iou_scores = []
+    processed_samples = 0
+    data_records = []  # For CSV output
 
-print(f"Evaluating with best hyperparameters: threshold={best_threshold}, max_area={best_max_area}, min_area={best_min_area}")
+    print(f"Processing {num_samples} samples...")
 
-# Initialize classifier with best hyperparameters
-classifier = PneumoniaClassifier(
-    model_path=model_path,
-    threshold=best_threshold,
-    max_area_fraction=best_max_area,
-    min_area_fraction=best_min_area
-)
+    # Iterate over the dataset
+    for idx, row in labels_df.iterrows():
+        if processed_samples >= num_samples:
+            break
 
-# Evaluate IoU
-avg_iou, iou_scores = evaluate_iou(classifier, test_images, valid_ground_truth_boxes)
+        patient_id = row['patientId']
+        dicom_path = os.path.join(data_dir, f"{patient_id}.dcm")
 
-# Log the result
-result = {
-    'threshold': best_threshold,
-    'max_area_fraction': best_max_area,
-    'min_area_fraction': best_min_area,
-    'avg_iou': avg_iou,
-    'individual_iou_scores': iou_scores
-}
+        if not os.path.exists(dicom_path):
+            print(f"Skipping {patient_id}: DICOM file not found")
+            continue
 
-# Save results to a file
-output_file = 'gradcam_best_results_200_images.json'
-with open(output_file, 'w') as f:
-    json.dump(result, f, indent=4)
-print(f"Results saved to {output_file}")
+        # Load and preprocess the image
+        try:
+            image = load_dicom_image(dicom_path)
+        except Exception as e:
+            print(f"Error loading {patient_id}: {str(e)}")
+            continue
 
-print(f"\nAverage IoU over 200 images: {avg_iou:.3f}")
-print(f"Individual IoU scores (first 5): {iou_scores[:5]}")
+        # Get ground truth boxes (only for pneumonia cases)
+        gt_boxes = get_ground_truth_boxes(patient_id, labels_df)
+        if not gt_boxes:  # Skip if no pneumonia (no ground truth boxes)
+            continue
+
+        # Predict with the classifier
+        try:
+            results = classifier.predict(image)
+            pred_boxes = results['boxes']  # Predicted bounding boxes from GradCAM
+        except Exception as e:
+            print(f"Error predicting {patient_id}: {str(e)}")
+            continue
+
+        # Calculate IoU for each predicted box against ground truth
+        sample_ious = []
+        for pred_box in pred_boxes:
+            max_iou = 0
+            for gt_box in gt_boxes:
+                iou = calculate_iou(pred_box, gt_box)
+                max_iou = max(max_iou, iou)
+            sample_ious.append(max_iou)
+
+        # Average IoU for this sample (if there are predicted boxes)
+        if sample_ious:
+            avg_iou = sum(sample_ious) / len(sample_ious)
+            iou_scores.append(avg_iou)
+        else:
+            avg_iou = 0  # No predicted boxes
+            print(f"Patient {patient_id} - No predicted boxes")
+
+        # Record data for CSV
+        data_records.append({
+            'PatientID': patient_id,
+            'PredictedBoxes': len(pred_boxes),
+            'GroundTruthBoxes': len(gt_boxes),
+            'AverageIoU': avg_iou,
+            'PneumoniaProbability': results['probabilities']['Pneumonia']  # Added for more context
+        })
+
+        processed_samples += 1
+        if processed_samples % 50 == 0:  # Progress update every 50 samples
+            print(f"Processed {processed_samples}/{num_samples} samples")
+
+    # Summary
+    if iou_scores:
+        overall_avg_iou = sum(iou_scores) / len(iou_scores)
+        print(f"\nProcessed {len(iou_scores)} valid samples with pneumonia.")
+        print(f"Overall Average IoU: {overall_avg_iou:.4f}")
+    else:
+        print("No valid IoU scores calculated.")
+
+    # Save raw data to CSV
+    df = pd.DataFrame(data_records)
+    csv_path = os.path.join(output_dir, "gradcam_iou_results.csv")
+    df.to_csv(csv_path, index=False)
+    print(f"Raw data saved to {csv_path}")
+
+    # Select 20 representative images based on IoU distribution
+    if len(data_records) > num_images_to_save:
+        # Sort by IoU to get a range of values
+        df_sorted = df.sort_values(by='AverageIoU')
+        # Select evenly spaced indices
+        indices = np.linspace(0, len(df_sorted) - 1, num_images_to_save, dtype=int)
+        selected_records = df_sorted.iloc[indices]
+        
+        print(f"\nSaving {num_images_to_save} select visualizations...")
+        for _, record in selected_records.iterrows():
+            patient_id = record['PatientID']
+            dicom_path = os.path.join(data_dir, f"{patient_id}.dcm")
+            try:
+                image = load_dicom_image(dicom_path)
+                results = classifier.predict(image)
+                pred_boxes = results['boxes']
+                gt_boxes = get_ground_truth_boxes(patient_id, labels_df)
+                vis_path = save_visualization(image, pred_boxes, gt_boxes, patient_id, output_dir)
+                print(f"Saved visualization for {patient_id} (IoU: {record['AverageIoU']:.4f}) at {vis_path}")
+            except Exception as e:
+                print(f"Error saving visualization for {patient_id}: {str(e)}")
+
+if __name__ == "__main__":
+    test_gradcam_iou(num_samples=200, num_images_to_save=20)  # Test on 200 samples, save 20 images
