@@ -1,0 +1,16 @@
+Evaluation Results on RSNA Dataset
+==================================
+
+Train Images Path: D:/rsna_data/train_images
+Test Images Path: D:/rsna_data/test_images
+Labels CSV: D:/rsna_data/labels/stage_2_train_labels.csv
+Total Images: 26684
+Class Distribution: {'Normal': 20672, 'Pneumonia': 6012}
+
+Accuracy: 0.4018
+Precision: 0.8144
+Recall: 0.4018
+F1 Score: 0.3882
+ROC-AUC: 0.7679
+Confusion Matrix:
+[[4846, 15826], [137, 5875]]
