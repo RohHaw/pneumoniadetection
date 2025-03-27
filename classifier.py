@@ -35,7 +35,7 @@ class PneumoniaClassifier(nn.Module):
         self.enable_dropout = enable_dropout
 
         # GradCAM
-        self.grad_cam = EnhancedGradCAM(self.model, self.model.layer3[-1])
+        self.grad_cam = EnhancedGradCAM(self.model, self.model.layer4[-1])
 
         # Image transformations
         self.transform = transforms.Compose([

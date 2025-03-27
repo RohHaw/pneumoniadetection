@@ -6,7 +6,7 @@ Train samples: 4684
 Validation samples: 585
 Test samples: 587
 
-Best Validation F1: 0.9692 (Epoch 3)
+Best Validation F1: 0.9692 (Epoch 8)
 
 Test Set Metrics:
 Accuracy: 0.9659

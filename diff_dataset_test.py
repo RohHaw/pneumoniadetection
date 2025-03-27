@@ -125,7 +125,7 @@ def plot_roc_curve(labels, probs):
 
 # Main evaluation script
 def main():
-    data_dir = "/uolstore/home/users/sc21r2h/Documents/Year3/Dissertation/archive_combined"
+    data_dir = "C:/Users/rhawr/Documents/archive_combined"
     model_path = "Training/UCSD/model_UCSD.pth"
     output_file = "evaluation_results_new_dataset.txt"
 
