@@ -1,4 +1,16 @@
-"""Main Streamlit application for Pneumonia X-Ray Classification."""
+"""
+Main Streamlit application for the Pneumonia X-Ray Classifier.
+
+This module implements a web-based interface using Streamlit for analysing chest X-ray images
+to detect pneumonia. It integrates a ResNet-50 classifier, a ResNet-18 validator, EnhancedGradCAM
+for visual explanations, and a Gemini API-based ClinicalQA assistant for textual insights.
+The application supports image uploads, real-time analysis, interactive result visualisation,
+analysis history, and a clinical question-answering feature. Configuration settings and utilities
+are imported from separate modules to ensure modularity.
+
+Author: Rohman Hawrylak
+Date: April 2025
+"""
 
 import streamlit as st
 from PIL import Image
@@ -12,16 +24,24 @@ from utils import (
 from ui_components import interactive_result_display, display_history, show_welcome_screen
 from clinical_qa import ClinicalQA
 
+# Configure Streamlit page settings as the first command
+st.set_page_config(
+    page_title="Pneumonia X-Ray Classifier", 
+    layout="wide", 
+    page_icon="🩺",
+    initial_sidebar_state="expanded"
+)
+
 def main():
-    """Run the Pneumonia X-Ray Classifier Streamlit app."""
-    st.set_page_config(
-        page_title="Pneumonia X-Ray Classifier", 
-        layout="wide", 
-        page_icon="🩺",
-        initial_sidebar_state="expanded"
-    )
-    
-    # Custom CSS
+    """
+    Run the Pneumonia X-Ray Classifier Streamlit application.
+
+    Sets up custom styling, initialises session state, loads AI models, and provides a tabbed
+    interface for analysis, history, and information. Handles image uploads, validation,
+    pneumonia detection, and clinical question answering. Maintains an analysis history and
+    supports downloading results as CSV.
+    """
+    # Apply custom CSS for styling and dark mode compatibility
     st.markdown("""
     <style>
         .main .block-container {
@@ -75,9 +95,10 @@ def main():
     </style>
     """, unsafe_allow_html=True)
     
+    # Initialise session state variables
     initialise_session_state()
 
-    # Application header
+    # Display application header
     with st.container():
         col1, col2 = st.columns([1, 5])
         with col1:
@@ -92,13 +113,13 @@ def main():
     
     st.markdown("---")
 
-    # Load models and API key
+    # Load AI models and configure ClinicalQA
     with st.spinner("Loading AI models..."):
         xray_validator, classifier = load_models()
         api_key = os.getenv('GEMINI_API_KEY') or st.secrets.get('GEMINI_API_KEY', None)
         qa_system = ClinicalQA(api_key=api_key) if api_key else None
         
-        # Restore QA context if it exists
+        # Restore QA context from session state if available
         if qa_system and 'qa_context' in st.session_state:
             qa_system.set_context(
                 analysis_results=st.session_state.qa_context['analysis_results'],
@@ -106,20 +127,22 @@ def main():
                 gradcam_image=st.session_state.qa_context['gradcam_image']
             )
 
+    # Handle model loading failure
     if not xray_validator or not classifier:
         st.error("⚠️ Model loading failed. Please check the logs and try again.")
         return
 
-    # Create tabs for different functions
+    # Create tabs for navigation
     tab1, tab2, tab3 = st.tabs(["📊 Analysis", "📚 History", "ℹ️ About"])
 
     with tab1:
-        # Left column for upload and right for results
+        # Split layout into upload and results columns
         left_col, right_col = st.columns([2, 3])
         
         with left_col:
             st.subheader("Upload X-Ray Image")
             
+            # File uploader for chest X-ray images
             uploaded_file = st.file_uploader(
                 "Drop your chest X-ray here",
                 type=SUPPORTED_FILE_TYPES,
@@ -127,6 +150,7 @@ def main():
             )
             
             if uploaded_file:
+                # Check file size against maximum limit
                 if uploaded_file.size > MAX_FILE_SIZE:
                     st.error(f"📁 File too large. Maximum size is {MAX_FILE_SIZE // (1024 * 1024)}MB.")
                 else:
@@ -136,6 +160,7 @@ def main():
                         display_image = image.copy()
                         st.image(display_image, caption="Uploaded X-Ray", use_container_width=True)
                         
+                        # Button to trigger analysis
                         analyze_button = st.button(
                             "🔍 Analyse X-Ray",
                             type="primary",
@@ -143,9 +168,11 @@ def main():
                         )
                         
                         if analyze_button:
+                            # Clear previous results
                             if 'last_results' in st.session_state:
                                 del st.session_state.last_results
                                 
+                            # Display progress bar and status
                             progress_bar = st.progress(0)
                             status_text = st.empty()
                             
@@ -153,6 +180,7 @@ def main():
                             time.sleep(0.5)
                             progress_bar.progress(33)
                             
+                            # Validate the image as a chest X-ray
                             is_xray, confidence = xray_validator.validate_image(image)
                             
                             if not is_xray:
@@ -169,18 +197,21 @@ def main():
                             progress_bar.progress(66)
                             
                             try:
+                                # Perform pneumonia classification
                                 results = classifier.predict(image)
                                 
                                 status_text.text("Step 3/3: Processing results...")
                                 time.sleep(0.5)
                                 progress_bar.progress(100)
                                 
+                                # Store results in session state
                                 st.session_state.last_results = {
                                     "results": results,
                                     "image": display_image,
                                     "timestamp": datetime.now()
                                 }
                                 
+                                # Update QA system context
                                 if qa_system:
                                     qa_system.set_context(
                                         analysis_results=results,
@@ -193,11 +224,13 @@ def main():
                                         'gradcam_image': results["gradcam"]
                                     }
                                 
+                                # Generate clinical explanation for pneumonia cases
                                 pneumonia_explanation = None
                                 if results["class"] == "Pneumonia" and qa_system:
                                     with st.spinner("Generating clinical explanation..."):
                                         pneumonia_explanation = qa_system.generate_pneumonia_explanation()
                                 
+                                # Create history entry
                                 history_entry = {
                                     "timestamp": datetime.now(),
                                     "results": results,
@@ -210,10 +243,12 @@ def main():
                                 st.session_state.analysis_history.append(history_entry)
                                 limit_history(HISTORY_LIMIT)
                                 
+                                # Clear progress indicators
                                 time.sleep(0.5)
                                 progress_bar.empty()
                                 status_text.empty()
                                 
+                                # Provide CSV download option
                                 csv = generate_results_csv(results)
                                 st.download_button(
                                     "📥 Download Results CSV",
@@ -233,14 +268,17 @@ def main():
                     except Exception as e:
                         st.error(f"❌ Failed to process the uploaded file: {str(e)}")
             else:
+                # Display welcome screen when no file is uploaded
                 show_welcome_screen()
         
         with right_col:
+            # Display analysis results if available
             if 'last_results' in st.session_state:
                 st.subheader("Analysis Results")
                 results = st.session_state.last_results["results"]
                 pneu_prob = results["probabilities"]["Pneumonia"]
 
+                # Display result summary
                 if results["class"] == "Pneumonia":
                     st.markdown(f"""
                     <div style='background-color: #FEE2E2; padding: 1rem; border-radius: 5px; margin-bottom: 1rem;'>
@@ -264,12 +302,14 @@ def main():
                     </div>
                     """, unsafe_allow_html=True)
                 
+                # Display interactive results
                 interactive_result_display(
                     st.session_state.last_results["results"],
                     st.session_state.last_results["image"],
                     st.session_state.last_results["results"]["gradcam"]
                 )
                 
+                # Show analysis timestamp
                 st.markdown(f"""
                 <div style='margin-top: 1rem; color: #6B7280; font-size: 0.8rem;'>
                     Analysis completed at {st.session_state.last_results["timestamp"].strftime('%Y-%m-%d %H:%M:%S')}
@@ -279,12 +319,14 @@ def main():
                 st.info("👈 Upload and analyse an X-ray to see results here")
     
     with tab2:
+        # Display analysis history
         if st.session_state.analysis_history:
             display_history()
         else:
             st.info("No analysis history available yet. Analyse an X-ray to begin.")
     
     with tab3:
+        # Display about section
         st.subheader("About this Application")
         st.markdown("""
             This application uses deep learning to analyse chest X-rays for signs of pneumonia. 
@@ -303,6 +345,7 @@ def main():
     st.markdown("---")
     st.subheader("🤖 Clinical Assistant")
     
+    # Check if ClinicalQA is available
     if not qa_system:
         st.warning("💡 Clinical QA is unavailable due to missing API key. Configure the GEMINI_API_KEY to enable this feature.")
     else:
@@ -311,10 +354,12 @@ def main():
         else:
             st.markdown("Ask questions about pneumonia, chest X-rays, or the analysis results")
             
+            # Display chat history
             for message in st.session_state.messages:
                 with st.chat_message(message["role"]):
                     st.markdown(message["content"])
             
+            # Handle new user input
             if prompt := st.chat_input("Type your question here..."):
                 st.session_state.messages.append({"role": "user", "content": prompt})
                 with st.chat_message("user"):
@@ -325,15 +370,18 @@ def main():
                         st.markdown(response)
                 st.session_state.messages.append({"role": "assistant", "content": response})
 
+    # Sidebar options and settings
     with st.sidebar:
         st.header("Options")
         
+        # Reset analysis button
         if st.button("🔄 Reset Analysis", use_container_width=True):
             reset_session_state()
             st.success("✅ Analysis history and chat reset successfully.")
             
         st.markdown("---")
         
+        # Display settings
         st.subheader("Settings")
         st.markdown(f"**Confidence Threshold**: {CONFIDENCE_THRESHOLD}%")
         st.markdown(f"**History Limit**: {HISTORY_LIMIT} analyses")

@@ -1,40 +1,54 @@
+"""
+Module defining the ClinicalQA class for interpreting chest X-ray analysis results.
+
+This module implements a question-answering assistant that uses the Gemini API to provide
+explanations based on pneumonia classifier outputs and GradCAM visualisations. The assistant
+adheres strictly to the provided model results, avoiding speculation and ensuring responses are
+factual, medically appropriate, and in British English.
+
+Author: Rohman Hawrylak
+Date: April 2025
+"""
+
 import google.generativeai as genai
 from typing import Dict, Any, Optional
 from PIL import Image
 
 
 class ClinicalQA:
-    """A medical AI assistant for interpreting chest X-ray analysis results using Gemini API.
+    """
+    A medical AI assistant for interpreting chest X-ray analysis results using the Gemini API.
 
-    This class provides question-answering capabilities based on machine learning model outputs
-    and GradCAM visualisations, maintaining strict adherence to provided data without speculation.
+    This class provides question-answering capabilities and explanations based on pneumonia
+    classifier outputs and GradCAM visualisations. It ensures strict adherence to the provided
+    data, avoids speculative diagnoses, and uses British English for responses.
 
     Attributes:
-        model (genai.GenerativeModel): Gemini model for text generation
-        vision_model (genai.GenerativeModel): Gemini model for vision tasks
-        analysis_context (dict): Stored analysis results and images
-        chat (genai.ChatSession): Chat session with context
-        system_prompt (str): Base prompt with instructions for responses
+        model (genai.GenerativeModel): Gemini model for text-based question answering.
+        vision_model (genai.GenerativeModel): Gemini model for vision-based tasks.
+        analysis_context (dict): Stored analysis results and images for context.
+        chat (genai.ChatSession): Active chat session with context.
+        system_prompt (str): Base prompt with instructions for responses.
     """
-
     def __init__(self, api_key: str):
-        """Initialise the ClinicalQA assistant with Gemini API configuration.
+        """
+        Initialise the ClinicalQA assistant with Gemini API configuration.
 
         Args:
-            api_key (str): Google API key for accessing Gemini services
+            api_key (str): Google API key for accessing Gemini services.
         """
-        # Configure Gemini API with provided key
+        # Configure Gemini API with the provided key
         genai.configure(api_key=api_key)
         
         # Initialise text and vision models
         self.model = genai.GenerativeModel('gemini-1.5-flash')
         self.vision_model = genai.GenerativeModel('gemini-1.5-flash')
         
-        # Initialise context and chat as None
+        # Initialise context and chat session as None
         self.analysis_context = None
         self.chat = None
 
-        # Define system prompt with strict guidelines
+        # Define system prompt with strict guidelines for responses
         self.system_prompt = """You are a medical AI assistant interpreting chest X-ray analysis results.  Your responses must:  
         - Use the provided machine learning model's classification as the primary diagnostic indicator  
         - Reference the GradCAM visualisation to explain model's focus areas  
@@ -51,12 +65,15 @@ class ClinicalQA:
 
     def set_context(self, analysis_results: Dict[str, Any], original_image: Image.Image, 
                    gradcam_image: Optional[Image.Image] = None) -> None:
-        """Store analysis results and images to provide context for questions.
+        """
+        Store analysis results and images to provide context for question answering.
 
         Args:
-            analysis_results (Dict[str, Any]): Results from the pneumonia classifier
-            original_image (Image.Image): Original chest X-ray image
-            gradcam_image (Optional[Image.Image]): GradCAM visualisation image, if available
+            analysis_results (Dict[str, Any]): Results from the pneumonia classifier, including
+                class, confidence, probabilities, and other relevant data.
+            original_image (Image.Image): Original chest X-ray image.
+            gradcam_image (Optional[Image.Image]): GradCAM visualisation image, if available.
+                Defaults to None.
         """
         # Store context in a dictionary
         self.analysis_context = {
@@ -65,7 +82,7 @@ class ClinicalQA:
             'gradcam_image': gradcam_image
         }
 
-        # Format detailed context string
+        # Format detailed context string for the system prompt
         context_str = f"""  
         Machine Learning Model Results:  
         - Predicted Class: {analysis_results['class']}  
@@ -75,18 +92,22 @@ class ClinicalQA:
         * Pneumonia Indication: {analysis_results['probabilities']['Pneumonia']:.1f}%  
         """
 
-        # Start new chat session with formatted system prompt
+        # Start a new chat session with the formatted system prompt
         self.chat = self.model.start_chat(history=[])
         self.chat.send_message(self.system_prompt.format(context=context_str))
 
     def answer_question(self, question: str) -> str:
-        """Generate a response to a user question based on stored context.
+        """
+        Generate a response to a user question based on the stored analysis context.
+
+        Delegates to a vision-based answering method to incorporate image context, ensuring
+        responses are based solely on the model's output and GradCAM visualisation.
 
         Args:
-            question (str): User's question about the chest X-ray analysis
+            question (str): User's question about the chest X-ray analysis.
 
         Returns:
-            str: Response text or error message
+            str: Response text or an error message if generation fails or context is missing.
         """
         # Check if context is set
         if self.analysis_context is None:
@@ -99,20 +120,26 @@ class ClinicalQA:
             return f"Error generating response: {str(e)}"
 
     def answer_question_with_image(self, question: str) -> str:
-        """Generate a response using vision capabilities when image context is needed.
+        """
+        Generate a response using vision capabilities for questions requiring image context.
+
+        Uses the Gemini vision model to process the GradCAM or original image alongside the
+        question, ensuring responses are strictly based on the model's output and highlighted
+        areas in the GradCAM visualisation.
 
         Args:
-            question (str): User's question about the chest X-ray analysis
+            question (str): User's question about the chest X-ray analysis.
 
         Returns:
-            str: Response text based on model output and GradCAM, or error message
+            str: Response text based on model output and GradCAM, or an error message if
+                generation fails or context is missing.
         """
         # Check if context is set
         if self.analysis_context is None:
             return "Please upload and analyse an image first before asking questions."
         
         try:
-            # Prepare images for vision model
+            # Select GradCAM image if available, otherwise use original image
             images = []
             if self.analysis_context.get('gradcam_image') is not None:
                 images.append(self.analysis_context['gradcam_image'])
@@ -141,7 +168,7 @@ class ClinicalQA:
             
             Question: {question}"""
             
-            # Generate response using vision model
+            # Generate response using the vision model
             response = self.vision_model.generate_content([prompt] + images)
             return response.text
         
@@ -149,11 +176,15 @@ class ClinicalQA:
             return f"Error generating response: {str(e)}"
         
     def generate_pneumonia_explanation(self) -> Optional[str]:
-        """Generate an explanation for pneumonia classification based on model output.
+        """
+        Generate an explanation for a pneumonia classification based on model output.
+
+        Provides a concise, factual description of the highlighted areas in the GradCAM
+        visualisation and explains their role in the model's pneumonia detection, if applicable.
 
         Returns:
             Optional[str]: Explanation text if pneumonia is detected and GradCAM is available,
-                          None if not applicable, or error message if generation fails
+                None if not applicable, or an error message if generation fails.
         """
         # Check conditions for generating explanation
         if self.analysis_context is None or self.analysis_context['results']['class'] != "Pneumonia":
@@ -185,7 +216,7 @@ class ClinicalQA:
         Focus on the heatmap's highlighted regions and keep it concise."""
 
         try:
-            # Generate response using vision model with GradCAM image
+            # Generate response using the vision model with GradCAM image
             response = self.vision_model.generate_content(
                 [prompt, self.analysis_context['gradcam_image']]
             )

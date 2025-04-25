@@ -1,3 +1,17 @@
+"""
+Training script for a ResNet-50-based pneumonia classifier with dataset splitting and visualisation.
+
+This module implements a training pipeline for a ResNet-50 model on a combined image dataset for
+binary classification (e.g., Normal vs. Pneumonia). It includes dataset splitting into training,
+validation, and test sets, data augmentation, mixed precision training, early stopping, and cosine
+annealing learning rate scheduling. The script evaluates performance on the test set and generates
+visualisations for training history, confusion matrix, and ROC curve. Results are saved to a text
+file and the best model to a checkpoint file.
+
+Author: Rohman Hawrylak
+Date: April 2025
+"""
+
 import os
 from torchvision import datasets, transforms, models
 import torch
@@ -11,8 +25,31 @@ import numpy as np
 from torch.cuda.amp import GradScaler, autocast
 from torch.optim.lr_scheduler import CosineAnnealingLR
 
-# Configuration
 class Config:
+    """
+    Configuration class for training parameters.
+
+    Defines paths, hyperparameters, and settings for the training pipeline, including dataset
+    directory, model architecture, training schedule, and device settings.
+
+    Attributes:
+        DATASET_DIR (str): Directory containing all images.
+        IMAGE_SIZE (int): Size for resizing images (height and width).
+        BATCH_SIZE (int): Batch size for training and evaluation.
+        NUM_CLASSES (int): Number of output classes (e.g., Normal and Pneumonia).
+        EPOCHS (int): Total number of training epochs.
+        BASE_LR (float): Base learning rate for the optimiser.
+        WEIGHT_DECAY (float): Weight decay for regularisation.
+        DROPOUT (float): Dropout probability in the fully connected layer.
+        USE_AMP (bool): Enable mixed precision training.
+        PATIENCE (int): Patience for early stopping.
+        MIN_DELTA (float): Minimum improvement for early stopping.
+        CLASS_WEIGHTS (torch.Tensor): Class weights for handling imbalance.
+        DEVICE (torch.device): Device for computation (GPU or CPU).
+        TRAIN_SPLIT (float): Proportion of data for training.
+        VAL_SPLIT (float): Proportion of data for validation.
+        TEST_SPLIT (float): Proportion of data for testing.
+    """
     DATASET_DIR = "../archive_combined/"  # Directory containing all images
     IMAGE_SIZE = 224
     BATCH_SIZE = 64
@@ -30,9 +67,23 @@ class Config:
     VAL_SPLIT = 0.1
     TEST_SPLIT = 0.1
 
-# Training history tracker
 class TrainingHistory:
+    """
+    Track training and validation metrics during model training.
+
+    Stores losses, accuracies, F1 scores, and ROC-AUC scores for each epoch to monitor performance
+    and generate visualisations.
+
+    Attributes:
+        train_losses (list): Training loss per epoch.
+        val_losses (list): Validation loss per epoch.
+        train_accuracies (list): Training accuracy per epoch.
+        val_accuracies (list): Validation accuracy per epoch.
+        val_f1s (list): Validation F1 score per epoch.
+        val_roc_aucs (list): Validation ROC-AUC score per epoch.
+    """
     def __init__(self):
+        """Initialise empty lists for tracking metrics."""
         self.train_losses = []
         self.val_losses = []
         self.train_accuracies = []
@@ -40,8 +91,16 @@ class TrainingHistory:
         self.val_f1s = []
         self.val_roc_aucs = []
 
-# Visualization functions
 def plot_training_history(history):
+    """
+    Plot and save training and validation metrics.
+
+    Generates a 2x2 subplot with training/validation loss, accuracy, validation F1 score,
+    and validation ROC-AUC score over epochs.
+
+    Args:
+        history (TrainingHistory): Object containing training and validation metrics.
+    """
     plt.figure(figsize=(15, 10))
     
     # Plot losses
@@ -83,6 +142,13 @@ def plot_training_history(history):
     plt.close()
 
 def plot_confusion_matrix(conf_matrix, class_names=['Class 0', 'Class 1']):
+    """
+    Plot and save a confusion matrix.
+
+    Args:
+        conf_matrix (numpy.ndarray): Confusion matrix from evaluation.
+        class_names (list, optional): List of class names. Defaults to ['Class 0', 'Class 1'].
+    """
     plt.figure(figsize=(8, 6))
     sns.heatmap(conf_matrix, annot=True, fmt='d', cmap='Blues',
                 xticklabels=class_names, yticklabels=class_names)
@@ -94,6 +160,13 @@ def plot_confusion_matrix(conf_matrix, class_names=['Class 0', 'Class 1']):
     plt.close()
 
 def plot_roc_curve(all_labels, all_probs):
+    """
+    Plot and save an ROC curve.
+
+    Args:
+        all_labels (numpy.ndarray): True labels from the test set.
+        all_probs (numpy.ndarray): Predicted probabilities for the positive class.
+    """
     fpr, tpr, _ = roc_curve(all_labels, all_probs[:, 1])
     
     plt.figure(figsize=(8, 6))
@@ -111,26 +184,46 @@ def plot_roc_curve(all_labels, all_probs):
 
 # Data transforms
 train_transform = transforms.Compose([
-    transforms.Resize((Config.IMAGE_SIZE, Config.IMAGE_SIZE)),
-    transforms.RandomHorizontalFlip(p=0.5),
-    transforms.RandomVerticalFlip(p=0.5),
-    transforms.RandomRotation(15),
-    transforms.RandomAffine(degrees=0, translate=(0.1, 0.1)),
-    transforms.RandomResizedCrop(Config.IMAGE_SIZE, scale=(0.8, 1.0)),
-    transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
-    transforms.RandomAutocontrast(p=0.2),
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    transforms.Resize((Config.IMAGE_SIZE, Config.IMAGE_SIZE)),  # Resize images
+    transforms.RandomHorizontalFlip(p=0.5),  # Random horizontal flip
+    transforms.RandomVerticalFlip(p=0.5),  # Random vertical flip
+    transforms.RandomRotation(15),  # Random rotation
+    transforms.RandomAffine(degrees=0, translate=(0.1, 0.1)),  # Random translation
+    transforms.RandomResizedCrop(Config.IMAGE_SIZE, scale=(0.8, 1.0)),  # Random crop
+    transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),  # Adjust color
+    transforms.RandomAutocontrast(p=0.2),  # Random autocontrast
+    transforms.ToTensor(),  # Convert to tensor
+    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])  # Normalise
 ])
 
 eval_transform = transforms.Compose([
-    transforms.Resize((Config.IMAGE_SIZE, Config.IMAGE_SIZE)),
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    transforms.Resize((Config.IMAGE_SIZE, Config.IMAGE_SIZE)),  # Resize images
+    transforms.ToTensor(),  # Convert to tensor
+    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])  # Normalise
 ])
 
 class EarlyStopping:
+    """
+    Implement early stopping based on validation loss.
+
+    Stops training if the validation loss does not improve by a minimum delta after a specified
+    number of epochs.
+
+    Attributes:
+        patience (int): Number of epochs to wait for improvement.
+        min_delta (float): Minimum improvement in validation loss.
+        counter (int): Number of epochs since last improvement.
+        best_loss (float): Best validation loss observed.
+        early_stop (bool): Flag indicating whether to stop training.
+    """
     def __init__(self, patience=Config.PATIENCE, min_delta=Config.MIN_DELTA):
+        """
+        Initialise EarlyStopping with patience and minimum delta.
+
+        Args:
+            patience (int, optional): Number of epochs to wait. Defaults to Config.PATIENCE.
+            min_delta (float, optional): Minimum improvement. Defaults to Config.MIN_DELTA.
+        """
         self.patience = patience
         self.min_delta = min_delta
         self.counter = 0
@@ -138,6 +231,12 @@ class EarlyStopping:
         self.early_stop = False
 
     def __call__(self, val_loss):
+        """
+        Check if early stopping should be triggered.
+
+        Args:
+            val_loss (float): Current validation loss.
+        """
         if self.best_loss is None:
             self.best_loss = val_loss
         elif val_loss > self.best_loss - self.min_delta:
@@ -149,20 +248,74 @@ class EarlyStopping:
             self.counter = 0
 
 class CustomDataset(Dataset):
+    """
+    Custom Dataset wrapper for applying transforms to an ImageFolder dataset.
+
+    Wraps a torchvision ImageFolder dataset to apply specific transformations during training
+    or evaluation.
+
+    Attributes:
+        dataset (Dataset): The underlying ImageFolder dataset.
+        transform (callable, optional): Transformations to apply to images.
+    """
     def __init__(self, dataset, transform=None):
+        """
+        Initialise the CustomDataset with a dataset and transform.
+
+        Args:
+            dataset (Dataset): The underlying dataset (e.g., ImageFolder).
+            transform (callable, optional): Optional transform to apply to images.
+        """
         self.dataset = dataset
         self.transform = transform
 
     def __len__(self):
+        """
+        Return the total number of samples in the dataset.
+
+        Returns:
+            int: Number of samples in the underlying dataset.
+        """
         return len(self.dataset)
 
     def __getitem__(self, idx):
+        """
+        Retrieve an image and its label by index.
+
+        Applies the specified transform to the image if provided.
+
+        Args:
+            idx (int): Index of the sample to retrieve.
+
+        Returns:
+            tuple: (image, label)
+                - image (torch.Tensor): Preprocessed image tensor.
+                - label (int): Class label.
+        """
         image, label = self.dataset[idx]
         if self.transform:
             image = self.transform(image)
         return image, label
 
 def train(model, dataloader, optimizer, criterion, device, scaler):
+    """
+    Train the model for one epoch.
+
+    Uses mixed precision training and computes loss and accuracy for the training set.
+
+    Args:
+        model (nn.Module): The model to train.
+        dataloader (DataLoader): DataLoader for training data.
+        optimizer (optim.Optimizer): Optimiser for updating model weights.
+        criterion (nn.Module): Loss function.
+        device (torch.device): Device for computation.
+        scaler (GradScaler): Scaler for mixed precision training.
+
+    Returns:
+        tuple: (train_loss, train_accuracy)
+            - train_loss (float): Average training loss.
+            - train_accuracy (float): Training accuracy.
+    """
     model.train()
     running_loss = 0.0
     correct = 0
@@ -173,10 +326,12 @@ def train(model, dataloader, optimizer, criterion, device, scaler):
         
         optimizer.zero_grad()
         
+        # Use mixed precision training
         with autocast(enabled=Config.USE_AMP):
             outputs = model(inputs)
             loss = criterion(outputs, labels)
         
+        # Backpropagate with scaled loss
         scaler.scale(loss).backward()
         scaler.step(optimizer)
         scaler.update()
@@ -186,6 +341,7 @@ def train(model, dataloader, optimizer, criterion, device, scaler):
         correct += (predicted == labels).sum().item()
         total += labels.size(0)
         
+        # Log progress every 10 batches
         if i % 10 == 0:
             print(f"\rBatch {i}/{len(dataloader)}: Loss = {loss.item():.4f}", end="")
     
@@ -193,6 +349,23 @@ def train(model, dataloader, optimizer, criterion, device, scaler):
     return running_loss / len(dataloader), accuracy
 
 def evaluate(model, dataloader, criterion, device, phase="val"):
+    """
+    Evaluate the model on a validation or test set.
+
+    Computes loss, predictions, probabilities, and metrics including accuracy, precision, recall,
+    F1 score, ROC-AUC, and confusion matrix.
+
+    Args:
+        model (nn.Module): The model to evaluate.
+        dataloader (DataLoader): DataLoader for evaluation data.
+        criterion (nn.Module): Loss function.
+        device (torch.device): Device for computation.
+        phase (str, optional): Evaluation phase ('val' or 'test'). Defaults to 'val'.
+
+    Returns:
+        dict: Evaluation metrics including loss, accuracy, precision, recall, F1 score, ROC-AUC,
+            confusion matrix, labels, and probabilities.
+    """
     model.eval()
     running_loss = 0.0
     all_predictions = []
@@ -203,6 +376,7 @@ def evaluate(model, dataloader, criterion, device, phase="val"):
         for inputs, labels in dataloader:
             inputs, labels = inputs.to(device), labels.to(device)
             
+            # Use mixed precision for evaluation
             with autocast(enabled=Config.USE_AMP):
                 outputs = model(inputs)
                 loss = criterion(outputs, labels)
@@ -218,6 +392,7 @@ def evaluate(model, dataloader, criterion, device, phase="val"):
     all_labels = np.array(all_labels)
     all_probs = np.array(all_probs)
     
+    # Compute metrics
     accuracy = (all_predictions == all_labels).mean()
     precision, recall, f1, _ = precision_recall_fscore_support(all_labels, all_predictions, average='weighted')
     roc_auc = roc_auc_score(all_labels, all_probs[:, 1])
@@ -236,6 +411,13 @@ def evaluate(model, dataloader, criterion, device, phase="val"):
     }
 
 def main():
+    """
+    Main function to execute the training and evaluation pipeline.
+
+    Loads the dataset, splits it into training, validation, and test sets, initialises the ResNet-50
+    model, trains with early stopping and learning rate scheduling, evaluates on the test set, and
+    saves results and visualisations.
+    """
     # Load and split dataset
     print("Loading dataset...")
     full_dataset = datasets.ImageFolder(Config.DATASET_DIR)
@@ -261,7 +443,7 @@ def main():
     val_loader = DataLoader(val_dataset, batch_size=Config.BATCH_SIZE, shuffle=False, num_workers=4, pin_memory=True)
     test_loader = DataLoader(test_dataset, batch_size=Config.BATCH_SIZE, shuffle=False, num_workers=4, pin_memory=True)
 
-    # Model setup
+    # Initialise model
     print("Setting up model...")
     model = models.resnet50(pretrained=True)
     model.fc = nn.Sequential(
@@ -270,12 +452,13 @@ def main():
     )
     model = model.to(Config.DEVICE)
 
+    # Set up training components
     criterion = nn.CrossEntropyLoss(weight=Config.CLASS_WEIGHTS)
     optimizer = optim.AdamW(model.parameters(), lr=Config.BASE_LR, weight_decay=Config.WEIGHT_DECAY)
     scheduler = CosineAnnealingLR(optimizer, T_max=Config.EPOCHS)
     scaler = GradScaler(enabled=Config.USE_AMP)
 
-    # Initialize training history tracker
+    # Initialise training history and early stopping
     history = TrainingHistory()
     early_stopping = EarlyStopping()
     best_val_f1 = 0.0
