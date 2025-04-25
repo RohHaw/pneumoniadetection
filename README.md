@@ -131,7 +131,6 @@ The project utilises two publicly available datasets:
   - Format: DICOM.
   - Usage: Fine-tuning ResNet-50, Grad-CAM evaluation.
 
-*Note*: Ensure datasets are downloaded and placed in the appropriate directory (e.g., `data/`). Preprocessing (resizing, normalisation) is handled by `utils.py`.
 
 ## Results
 
