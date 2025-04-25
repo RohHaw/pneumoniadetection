@@ -8,7 +8,7 @@ import numpy as np
 from gradcam import EnhancedGradCAM
 
 class PneumoniaClassifier(nn.Module):
-    def __init__(self, model_path="Training/UCSD/model_UCSD.pth", mc_dropout_iterations=20, dropout=0.3):
+    def __init__(self, model_path="Training/UCSD/model_UCSD_finetuned_rsna.pth", mc_dropout_iterations=20, dropout=0.3):
         super(PneumoniaClassifier, self).__init__()
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
